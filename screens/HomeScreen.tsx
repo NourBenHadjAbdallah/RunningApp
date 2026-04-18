@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useCallback } from 'react'
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import {
   View, Text, FlatList, StyleSheet,
   RefreshControl, ActivityIndicator, TouchableOpacity,
-  ScrollView, Alert,
+  ScrollView, Alert, Modal, Animated, PanResponder,
+  TextInput, Dimensions, KeyboardAvoidingView, Platform,
 } from 'react-native'
 import { FontAwesome5 } from '@expo/vector-icons'
 import { activityService, Activity, Group, RunEvent } from '../services/activityService'
@@ -10,17 +11,13 @@ import { myeventsService, Event as TunisianEvent } from '../services/myeventsSer
 import { Image, Linking } from 'react-native'
 import { formatTime, formatDate } from '../utils/calculations'
 import { Colors } from '../constants/colors'
+import { supabase } from '../services/supabase'
 
 type FeedTab = 'activity' | 'groups' | 'events'
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+const SCREEN_HEIGHT = Dimensions.get('window').height
 
-const CATEGORY_COLORS: Record<Group['category'], string> = {
-  running: Colors.primary,
-  trail: Colors.success,
-  marathon: '#f59e0b',
-  casual: '#6366f1',
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const EVENT_TYPE_META: Record<RunEvent['type'], { label: string; color: string; icon: string }> = {
   race:      { label: 'Race',      color: Colors.danger,  icon: 'trophy' },
@@ -31,14 +28,11 @@ const EVENT_TYPE_META: Record<RunEvent['type'], { label: string; color: string; 
 function formatEventDate(iso: string) {
   return new Date(iso).toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
 }
-
 function formatEventTime(iso: string) {
   return new Date(iso).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })
 }
-
 function daysUntil(iso: string) {
-  const diff = new Date(iso).getTime() - Date.now()
-  return Math.ceil(diff / (1000 * 60 * 60 * 24))
+  return Math.ceil((new Date(iso).getTime() - Date.now()) / (1000 * 60 * 60 * 24))
 }
 
 // ─── Activity Card ────────────────────────────────────────────────────────────
@@ -108,7 +102,6 @@ function ActivityCard({ item, kudosed, onKudos }: ActivityCardProps) {
             {kudos > 0 ? `${kudos} Kudos` : 'Give Kudos'}
           </Text>
         </TouchableOpacity>
-
         <TouchableOpacity style={styles.commentBtn}>
           <FontAwesome5 name="comment" size={13} color={Colors.textMuted} />
           <Text style={styles.commentText}>
@@ -123,12 +116,16 @@ function ActivityCard({ item, kudosed, onKudos }: ActivityCardProps) {
 // ─── Group Card ───────────────────────────────────────────────────────────────
 
 function GroupCard({ group, onToggle }: { group: Group; onToggle: (g: Group) => void }) {
-  const accent = CATEGORY_COLORS[group.category]
   return (
     <View style={styles.groupCard}>
-      <View style={[styles.groupIconCircle, { borderColor: accent }]}>
-        <FontAwesome5 name={group.icon as any} size={18} color={accent} />
-      </View>
+      {/* Group image or fallback */}
+      {(group as any).image_url ? (
+        <Image source={{ uri: (group as any).image_url }} style={styles.groupImage} resizeMode="cover" />
+      ) : (
+        <View style={styles.groupImageFallback}>
+          <FontAwesome5 name="users" size={20} color={Colors.textMuted} />
+        </View>
+      )}
       <View style={styles.groupInfo}>
         <Text style={styles.groupName}>{group.name}</Text>
         {group.description ? (
@@ -144,6 +141,12 @@ function GroupCard({ group, onToggle }: { group: Group; onToggle: (g: Group) => 
         onPress={() => onToggle(group)}
         activeOpacity={0.8}
       >
+        <FontAwesome5
+          name={group.joined ? 'check' : 'plus'}
+          size={11}
+          color={group.joined ? '#fff' : Colors.primary}
+          style={{ marginRight: 4 }}
+        />
         <Text style={[styles.joinBtnText, group.joined && styles.joinBtnTextJoined]}>
           {group.joined ? 'Joined' : 'Join'}
         </Text>
@@ -172,12 +175,10 @@ function EventCard({ event, onToggle }: { event: RunEvent; onToggle: (e: RunEven
           {days === 0 ? 'Today' : days === 1 ? 'Tomorrow' : `In ${days} days`}
         </Text>
       </View>
-
       <Text style={styles.eventTitle}>{event.title}</Text>
       {event.description ? (
         <Text style={styles.eventDesc} numberOfLines={2}>{event.description}</Text>
       ) : null}
-
       <View style={styles.eventMeta}>
         <View style={styles.eventMetaItem}>
           <FontAwesome5 name="calendar" size={11} color={Colors.textMuted} />
@@ -202,12 +203,9 @@ function EventCard({ event, onToggle }: { event: RunEvent; onToggle: (e: RunEven
           </View>
         )}
       </View>
-
       <View style={styles.eventFooter}>
         <View>
-          {event.organizer ? (
-            <Text style={styles.eventOrganizer}>by {event.organizer}</Text>
-          ) : null}
+          {event.organizer ? <Text style={styles.eventOrganizer}>by {event.organizer}</Text> : null}
           {spotsLeft !== null && spotsLeft <= 10 && (
             <Text style={styles.spotsText}>{spotsLeft} spots left!</Text>
           )}
@@ -228,22 +226,211 @@ function EventCard({ event, onToggle }: { event: RunEvent; onToggle: (e: RunEven
   )
 }
 
+// ─── Create Group Sheet ───────────────────────────────────────────────────────
+
+function CreateGroupSheet({
+  visible,
+  onClose,
+  onCreated,
+}: {
+  visible: boolean
+  onClose: () => void
+  onCreated: (group: Group) => void
+}) {
+  const SHEET_H = SCREEN_HEIGHT * 0.78
+  const translateY = useRef(new Animated.Value(SHEET_H)).current
+
+  const [name, setName] = useState('')
+  const [description, setDescription] = useState('')
+  const [imageUrl, setImageUrl] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (visible) {
+      translateY.setValue(SHEET_H)
+      Animated.spring(translateY, { toValue: 0, useNativeDriver: true, tension: 65, friction: 11 }).start()
+    }
+  }, [visible])
+
+  const close = () => {
+    Animated.timing(translateY, { toValue: SHEET_H, duration: 260, useNativeDriver: true }).start(onClose)
+  }
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onPanResponderMove: (_, gs) => { if (gs.dy > 0) translateY.setValue(gs.dy) },
+      onPanResponderRelease: (_, gs) => {
+        if (gs.dy > 100 || gs.vy > 0.5) close()
+        else Animated.spring(translateY, { toValue: 0, useNativeDriver: true, tension: 65, friction: 11 }).start()
+      },
+    })
+  ).current
+
+  const handleCreate = async () => {
+    if (!name.trim()) return Alert.alert('Missing name', 'Please give your group a name.')
+    setSaving(true)
+    try {
+      // Use getSession() — same reliable pattern as login/save-run
+      const { data: { session } } = await supabase.auth.getSession()
+      const userId = session?.user?.id
+      if (!userId) throw new Error('Not logged in')
+
+      const { data, error } = await supabase
+        .from('groups')
+        .insert({
+          name: name.trim(),
+          description: description.trim() || null,
+          image_url: imageUrl.trim() || null,
+          // keep required DB columns with safe defaults
+          icon: 'users',
+          category: 'running',
+          member_count: 1,
+          created_by: userId,
+        })
+        .select()
+        .single()
+
+      if (error) throw error
+
+      // Auto-join the creator
+      await supabase.from('group_members').insert({ group_id: data.id, user_id: userId })
+
+      onCreated({ ...data, joined: true })
+
+      // Reset form
+      setName('')
+      setDescription('')
+      setImageUrl('')
+      close()
+    } catch (e: any) {
+      Alert.alert('Error', e.message)
+    }
+    setSaving(false)
+  }
+
+  if (!visible) return null
+
+  const hasImage = imageUrl.trim().length > 0
+
+  return (
+    <Modal visible transparent animationType="none" onRequestClose={close}>
+      <TouchableOpacity style={cs.backdrop} activeOpacity={1} onPress={close} />
+      <Animated.View style={[cs.container, { height: SHEET_H, transform: [{ translateY }] }]}>
+        {/* Handle */}
+        <View {...panResponder.panHandlers} style={cs.handleArea}>
+          <View style={cs.handle} />
+        </View>
+
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={cs.scroll} keyboardShouldPersistTaps="handled">
+
+            {/* Header */}
+            <View style={cs.header}>
+              <View style={cs.headerIcon}>
+                <FontAwesome5 name="users" size={18} color={Colors.primary} />
+              </View>
+              <Text style={cs.headerTitle}>Create a Group</Text>
+              <TouchableOpacity onPress={close} style={cs.closeBtn}>
+                <FontAwesome5 name="times" size={15} color={Colors.textMuted} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Image preview / placeholder */}
+            <View style={cs.imagePreview}>
+              {hasImage ? (
+                <Image source={{ uri: imageUrl.trim() }} style={cs.imagePreviewImg} resizeMode="cover" />
+              ) : (
+                <View style={cs.imagePreviewPlaceholder}>
+                  <FontAwesome5 name="image" size={32} color={Colors.textMuted} />
+                  <Text style={cs.imagePreviewHint}>Group image preview</Text>
+                </View>
+              )}
+            </View>
+
+            {/* Image URL */}
+            <Text style={cs.label}>Group Image URL</Text>
+            <View style={cs.inputRow}>
+              <FontAwesome5 name="link" size={13} color={Colors.textDim} style={cs.inputIcon} />
+              <TextInput
+                style={cs.input}
+                placeholder="https://example.com/image.jpg"
+                placeholderTextColor={Colors.textDim}
+                value={imageUrl}
+                onChangeText={setImageUrl}
+                autoCapitalize="none"
+                keyboardType="url"
+              />
+            </View>
+
+            {/* Name */}
+            <Text style={cs.label}>Group Name *</Text>
+            <View style={cs.inputRow}>
+              <FontAwesome5 name="users" size={13} color={Colors.textDim} style={cs.inputIcon} />
+              <TextInput
+                style={cs.input}
+                placeholder="e.g. Tunis Morning Runners"
+                placeholderTextColor={Colors.textDim}
+                value={name}
+                onChangeText={setName}
+                autoCapitalize="words"
+                maxLength={50}
+              />
+            </View>
+
+            {/* Description */}
+            <Text style={cs.label}>Description</Text>
+            <View style={[cs.inputRow, { alignItems: 'flex-start', paddingTop: 12 }]}>
+              <FontAwesome5 name="align-left" size={13} color={Colors.textDim} style={[cs.inputIcon, { marginTop: 2 }]} />
+              <TextInput
+                style={[cs.input, { height: 80, textAlignVertical: 'top' }]}
+                placeholder="What's this group about?"
+                placeholderTextColor={Colors.textDim}
+                value={description}
+                onChangeText={setDescription}
+                multiline
+                maxLength={200}
+              />
+            </View>
+
+            {/* Create button */}
+            <TouchableOpacity
+              style={[cs.createBtn, saving && { opacity: 0.6 }]}
+              onPress={handleCreate}
+              disabled={saving}
+              activeOpacity={0.85}
+            >
+              {saving
+                ? <ActivityIndicator color="#fff" />
+                : (
+                  <>
+                    <FontAwesome5 name="plus-circle" size={16} color="#fff" style={{ marginRight: 8 }} />
+                    <Text style={cs.createBtnText}>Create Group</Text>
+                  </>
+                )
+              }
+            </TouchableOpacity>
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </Animated.View>
+    </Modal>
+  )
+}
+
 // ─── Main Screen ──────────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
   const [tab, setTab] = useState<FeedTab>('activity')
 
-  // Activity feed
   const [activities, setActivities] = useState<Activity[]>([])
   const [kudosedIds, setKudosedIds] = useState<Set<string>>(new Set())
   const [feedLoading, setFeedLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
-  // Groups
   const [groups, setGroups] = useState<Group[]>([])
   const [groupsLoading, setGroupsLoading] = useState(true)
+  const [showCreateGroup, setShowCreateGroup] = useState(false)
 
-  // Events (live from myevents.tn)
   const [events, setEvents] = useState<TunisianEvent[]>([])
   const [eventsLoading, setEventsLoading] = useState(true)
   const [eventsError, setEventsError] = useState<string | null>(null)
@@ -254,13 +441,10 @@ export default function HomeScreen() {
     try {
       const data = await activityService.getFriendsFeed()
       setActivities(data)
-      // Fetch which ones the current user has kudosed
       const ids = data.map((a) => a.id)
       const kudosed = await activityService.getMyKudos(ids)
       setKudosedIds(kudosed)
-    } catch (e) {
-      console.error('Feed error:', e)
-    }
+    } catch (e) { console.error('Feed error:', e) }
     setFeedLoading(false)
     setRefreshing(false)
   }, [])
@@ -269,9 +453,7 @@ export default function HomeScreen() {
     try {
       const data = await activityService.getGroups()
       setGroups(data)
-    } catch (e) {
-      console.error('Groups error:', e)
-    }
+    } catch (e) { console.error('Groups error:', e) }
     setGroupsLoading(false)
   }, [])
 
@@ -281,43 +463,27 @@ export default function HomeScreen() {
       const data = await myeventsService.getUpcomingEvents()
       setEvents(data)
     } catch (e: any) {
-      console.error('Events error:', e)
       setEventsError(e.message ?? 'Failed to load events')
     }
     setEventsLoading(false)
   }, [])
 
-  useEffect(() => {
-    loadFeed()
-    loadGroups()
-    loadEvents()
-  }, [])
+  useEffect(() => { loadFeed(); loadGroups(); loadEvents() }, [])
 
-  const onRefresh = () => {
-    setRefreshing(true)
-    loadFeed()
-    loadGroups()
-    loadEvents()
-  }
+  const onRefresh = () => { setRefreshing(true); loadFeed(); loadGroups(); loadEvents() }
 
   // ── Kudos toggle ───────────────────────────────────────────────────────────
 
   const handleKudos = async (activityId: string, currently: boolean) => {
-    // Optimistic update
-    setKudosedIds((prev) => {
+    setKudosedIds(prev => {
       const next = new Set(prev)
       currently ? next.delete(activityId) : next.add(activityId)
       return next
     })
     try {
-      if (currently) {
-        await activityService.removeKudos(activityId)
-      } else {
-        await activityService.giveKudos(activityId)
-      }
+      currently ? await activityService.removeKudos(activityId) : await activityService.giveKudos(activityId)
     } catch {
-      // Revert on error
-      setKudosedIds((prev) => {
+      setKudosedIds(prev => {
         const next = new Set(prev)
         currently ? next.add(activityId) : next.delete(activityId)
         return next
@@ -328,34 +494,24 @@ export default function HomeScreen() {
   // ── Group toggle ───────────────────────────────────────────────────────────
 
   const handleGroupToggle = async (group: Group) => {
-    // Optimistic update
-    setGroups((prev) =>
-      prev.map((g) =>
-        g.id === group.id
-          ? { ...g, joined: !g.joined, member_count: g.joined ? g.member_count - 1 : g.member_count + 1 }
-          : g
-      )
-    )
+    setGroups(prev => prev.map(g =>
+      g.id === group.id
+        ? { ...g, joined: !g.joined, member_count: g.joined ? g.member_count - 1 : g.member_count + 1 }
+        : g
+    ))
     try {
-      if (group.joined) {
-        await activityService.leaveGroup(group.id)
-      } else {
-        await activityService.joinGroup(group.id)
-      }
+      group.joined ? await activityService.leaveGroup(group.id) : await activityService.joinGroup(group.id)
     } catch (e: any) {
       Alert.alert('Error', e.message)
-      // Revert
-      setGroups((prev) =>
-        prev.map((g) =>
-          g.id === group.id
-            ? { ...g, joined: group.joined, member_count: group.member_count }
-            : g
-        )
-      )
+      setGroups(prev => prev.map(g =>
+        g.id === group.id ? { ...g, joined: group.joined, member_count: group.member_count } : g
+      ))
     }
   }
 
-
+  const handleGroupCreated = (newGroup: Group) => {
+    setGroups(prev => [newGroup, ...prev])
+  }
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
@@ -397,11 +553,7 @@ export default function HomeScreen() {
             data={activities}
             keyExtractor={(item) => item.id}
             renderItem={({ item }) => (
-              <ActivityCard
-                item={item}
-                kudosed={kudosedIds.has(item.id)}
-                onKudos={handleKudos}
-              />
+              <ActivityCard item={item} kudosed={kudosedIds.has(item.id)} onKudos={handleKudos} />
             )}
             refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
             ListEmptyComponent={
@@ -424,36 +576,52 @@ export default function HomeScreen() {
         groupsLoading ? (
           <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>
         ) : (
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 20 }}>
-            {groups.filter((g) => g.joined).length > 0 && (
-              <>
-                <Text style={styles.sectionLabel}>Your Groups</Text>
-                {groups.filter((g) => g.joined).map((g) => (
-                  <GroupCard key={g.id} group={g} onToggle={handleGroupToggle} />
-                ))}
-              </>
-            )}
-            <Text style={styles.sectionLabel}>
-              {groups.filter((g) => g.joined).length > 0 ? 'Discover Groups' : 'All Groups'}
-            </Text>
-            {groups.filter((g) => !g.joined).length === 0 && groups.filter((g) => g.joined).length === 0 ? (
-              <View style={styles.empty}>
-                <View style={styles.emptyIconCircle}>
-                  <FontAwesome5 name="users" size={28} color={Colors.textMuted} />
+          <View style={{ flex: 1 }}>
+            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 100 }}>
+
+              {/* Your groups */}
+              {groups.filter(g => g.joined).length > 0 && (
+                <>
+                  <Text style={styles.sectionLabel}>Your Groups</Text>
+                  {groups.filter(g => g.joined).map(g => (
+                    <GroupCard key={g.id} group={g} onToggle={handleGroupToggle} />
+                  ))}
+                </>
+              )}
+
+              {/* Discover */}
+              <Text style={styles.sectionLabel}>
+                {groups.filter(g => g.joined).length > 0 ? 'Discover Groups' : 'All Groups'}
+              </Text>
+              {groups.filter(g => !g.joined).length === 0 && groups.filter(g => g.joined).length === 0 ? (
+                <View style={styles.empty}>
+                  <View style={styles.emptyIconCircle}>
+                    <FontAwesome5 name="users" size={28} color={Colors.textMuted} />
+                  </View>
+                  <Text style={styles.emptyTitle}>No groups yet</Text>
+                  <Text style={styles.emptyText}>Be the first — create a group below!</Text>
                 </View>
-                <Text style={styles.emptyTitle}>No groups yet</Text>
-                <Text style={styles.emptyText}>Groups will appear here once created.</Text>
-              </View>
-            ) : (
-              groups.filter((g) => !g.joined).map((g) => (
-                <GroupCard key={g.id} group={g} onToggle={handleGroupToggle} />
-              ))
-            )}
-          </ScrollView>
+              ) : (
+                groups.filter(g => !g.joined).map(g => (
+                  <GroupCard key={g.id} group={g} onToggle={handleGroupToggle} />
+                ))
+              )}
+            </ScrollView>
+
+            {/* Floating create button */}
+            <TouchableOpacity
+              style={styles.createGroupFab}
+              onPress={() => setShowCreateGroup(true)}
+              activeOpacity={0.85}
+            >
+              <FontAwesome5 name="plus" size={15} color="#fff" style={{ marginRight: 8 }} />
+              <Text style={styles.createGroupFabText}>Create Group</Text>
+            </TouchableOpacity>
+          </View>
         )
       )}
 
-      {/* ── Events tab (live from myevents.tn) ── */}
+      {/* ── Events tab ── */}
       {tab === 'events' && (
         eventsLoading ? (
           <View style={styles.center}><ActivityIndicator size="large" color={Colors.primary} /></View>
@@ -481,20 +649,13 @@ export default function HomeScreen() {
               </View>
             ) : (
               events.map((event, i) => {
-                const today = new Date()
-                today.setHours(0, 0, 0, 0)
+                const today = new Date(); today.setHours(0,0,0,0)
                 const eventDate = new Date(event.date)
-                const days = Math.ceil((eventDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
+                const days = Math.ceil((eventDate.getTime() - today.getTime()) / (1000*60*60*24))
                 const formattedDate = eventDate.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })
                 const isVerySoon = days <= 7
-
                 return (
-                  <TouchableOpacity
-                    key={i}
-                    style={styles.tunisianEventCard}
-                    onPress={() => Linking.openURL(event.url)}
-                    activeOpacity={0.85}
-                  >
+                  <TouchableOpacity key={i} style={styles.tunisianEventCard} onPress={() => Linking.openURL(event.url)} activeOpacity={0.85}>
                     {event.image ? (
                       <Image source={{ uri: event.image }} style={styles.tunisianEventImage} resizeMode="cover" />
                     ) : (
@@ -531,11 +692,78 @@ export default function HomeScreen() {
           </ScrollView>
         )
       )}
+
+      {/* Create Group Sheet */}
+      <CreateGroupSheet
+        visible={showCreateGroup}
+        onClose={() => setShowCreateGroup(false)}
+        onCreated={handleGroupCreated}
+      />
     </View>
   )
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
+// ─── Create Sheet Styles ──────────────────────────────────────────────────────
+
+const cs = StyleSheet.create({
+  backdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.55)' },
+  container: {
+    position: 'absolute', bottom: 0, left: 0, right: 0,
+    backgroundColor: Colors.card,
+    borderTopLeftRadius: 26, borderTopRightRadius: 26,
+    overflow: 'hidden',
+  },
+  handleArea: { width: '100%', alignItems: 'center', paddingTop: 12, paddingBottom: 6 },
+  handle: { width: 44, height: 5, borderRadius: 3, backgroundColor: Colors.border },
+  scroll: { paddingHorizontal: 20, paddingBottom: 40 },
+
+  header: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingVertical: 14, marginBottom: 8,
+    borderBottomWidth: 1, borderBottomColor: Colors.border, gap: 12,
+  },
+  headerIcon: {
+    width: 40, height: 40, borderRadius: 20,
+    backgroundColor: Colors.card2,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  headerTitle: { flex: 1, color: Colors.text, fontSize: 18, fontWeight: '700' },
+  closeBtn: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: Colors.card2, justifyContent: 'center', alignItems: 'center',
+  },
+
+  imagePreview: {
+    height: 160, borderRadius: 16, overflow: 'hidden',
+    marginTop: 16, marginBottom: 4,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  imagePreviewImg: { width: '100%', height: '100%' },
+  imagePreviewPlaceholder: {
+    flex: 1, justifyContent: 'center', alignItems: 'center',
+    backgroundColor: Colors.card2, gap: 8,
+  },
+  imagePreviewHint: { color: Colors.textMuted, fontSize: 13 },
+
+  label: { color: Colors.textMuted, fontSize: 13, fontWeight: '600', marginBottom: 8, marginTop: 16 },
+  inputRow: {
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.card2, borderRadius: 14,
+    borderWidth: 1, borderColor: Colors.border, paddingHorizontal: 14,
+  },
+  inputIcon: { marginRight: 10 },
+  input: { flex: 1, color: Colors.text, fontSize: 15, paddingVertical: 14 },
+
+  createBtn: {
+    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
+    backgroundColor: Colors.primary, borderRadius: 16,
+    paddingVertical: 16, marginTop: 24,
+  },
+  createBtnText: { color: '#fff', fontSize: 16, fontWeight: '700' },
+})
+
+// ─── Main Styles ──────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
@@ -617,22 +845,42 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: Colors.card, borderRadius: 18,
     marginHorizontal: 16, marginBottom: 10,
-    padding: 16, borderWidth: 1, borderColor: Colors.border,
+    padding: 14, borderWidth: 1, borderColor: Colors.border,
   },
-  groupIconCircle: {
-    width: 48, height: 48, borderRadius: 24,
-    backgroundColor: Colors.card2, justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1.5, marginRight: 12,
+  groupImage: {
+    width: 56, height: 56, borderRadius: 14,
+    marginRight: 12,
+  },
+  groupImageFallback: {
+    width: 56, height: 56, borderRadius: 14,
+    marginRight: 12,
+    backgroundColor: Colors.card2,
+    justifyContent: 'center', alignItems: 'center',
+    borderWidth: 1, borderColor: Colors.border,
   },
   groupInfo: { flex: 1, marginRight: 10 },
   groupName: { color: Colors.text, fontSize: 15, fontWeight: '700', marginBottom: 3 },
   groupDesc: { color: Colors.textMuted, fontSize: 12, lineHeight: 17, marginBottom: 5 },
-  groupMeta: { flexDirection: 'row', alignItems: 'center' },
+  groupMeta: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   groupMetaText: { color: Colors.textMuted, fontSize: 12 },
-  joinBtn: { paddingHorizontal: 16, paddingVertical: 8, borderRadius: 10, borderWidth: 1.5, borderColor: Colors.primary },
+  joinBtn: {
+    flexDirection: 'row', alignItems: 'center',
+    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, borderWidth: 1.5, borderColor: Colors.primary,
+  },
   joinBtnJoined: { backgroundColor: Colors.primary },
   joinBtnText: { color: Colors.primary, fontSize: 13, fontWeight: '700' },
   joinBtnTextJoined: { color: '#fff' },
+
+  // Create group FAB
+  createGroupFab: {
+    position: 'absolute', bottom: 20, alignSelf: 'center',
+    flexDirection: 'row', alignItems: 'center',
+    backgroundColor: Colors.primary, borderRadius: 50,
+    paddingHorizontal: 24, paddingVertical: 14,
+    shadowColor: Colors.primary, shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.4, shadowRadius: 12, elevation: 8,
+  },
+  createGroupFabText: { color: '#fff', fontSize: 15, fontWeight: '700' },
 
   // Event card
   eventCard: {
@@ -677,30 +925,26 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { color: Colors.text, fontSize: 20, fontWeight: '700', marginBottom: 8 },
   emptyText: { color: Colors.textMuted, fontSize: 15, textAlign: 'center', lineHeight: 22 },
+
   // Tunisian events
-  eventsHeader: { flexDirection: 'row' as const, justifyContent: 'space-between' as const, alignItems: 'center' as const, paddingRight: 20 },
+  eventsHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingRight: 20 },
   eventsSource: { color: Colors.textMuted, fontSize: 11 },
   tunisianEventCard: {
     backgroundColor: Colors.card, borderRadius: 18,
     marginHorizontal: 16, marginBottom: 12,
-    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden' as const,
+    borderWidth: 1, borderColor: Colors.border, overflow: 'hidden',
   },
   tunisianEventImage: { width: '100%', height: 150 },
-  tunisianEventImagePlaceholder: {
-    backgroundColor: Colors.card2, justifyContent: 'center' as const, alignItems: 'center' as const,
-  },
-  tunisianCountdown: {
-    position: 'absolute' as const, top: 10, right: 10,
-    paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20,
-  },
+  tunisianEventImagePlaceholder: { backgroundColor: Colors.card2, justifyContent: 'center', alignItems: 'center' },
+  tunisianCountdown: { position: 'absolute', top: 10, right: 10, paddingHorizontal: 10, paddingVertical: 4, borderRadius: 20 },
   tunisianCountdownSoon: { backgroundColor: Colors.danger },
   tunisianCountdownNormal: { backgroundColor: 'rgba(0,0,0,0.65)' },
-  tunisianCountdownText: { color: '#fff', fontSize: 11, fontWeight: '800' as const },
+  tunisianCountdownText: { color: '#fff', fontSize: 11, fontWeight: '800' },
   tunisianEventInfo: { padding: 14, gap: 6 },
-  tunisianEventTitle: { color: Colors.text, fontSize: 15, fontWeight: '700' as const, lineHeight: 20 },
-  tunisianMetaRow: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 7 },
+  tunisianEventTitle: { color: Colors.text, fontSize: 15, fontWeight: '700', lineHeight: 20 },
+  tunisianMetaRow: { flexDirection: 'row', alignItems: 'center', gap: 7 },
   tunisianLocation: { color: Colors.primary, fontSize: 12, flex: 1 },
   tunisianDate: { color: Colors.textMuted, fontSize: 12 },
-  tunisianFooter: { flexDirection: 'row' as const, alignItems: 'center' as const, gap: 6, marginTop: 4 },
-  tunisianRegister: { color: Colors.primary, fontSize: 12, fontWeight: '700' as const },
+  tunisianFooter: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
+  tunisianRegister: { color: Colors.primary, fontSize: 12, fontWeight: '700' },
 })

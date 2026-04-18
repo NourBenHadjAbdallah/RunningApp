@@ -23,7 +23,7 @@ const YEARS = Array.from({ length: 100 }, (_, i) => String(currentYear - 13 - i)
 
 type PickerField = 'day' | 'month' | 'year' | null
 
-// ✅ FIX: Defined OUTSIDE the component so it never re-mounts on re-render,
+// Defined OUTSIDE the component so it never re-mounts on re-render,
 // which was causing the keyboard to dismiss after every single character typed.
 const InputRow = ({
   icon, placeholder, value, onChangeText, keyboardType, secureTextEntry, rightElement, autoCapitalize,
@@ -89,15 +89,39 @@ export default function AuthScreen() {
     return `${dobYear}-${dobMonth}-${dobDay}`
   }
 
+  /**
+   * Resolves a username or email to the account email.
+   *
+   * - If the identifier contains '@' it's already an email → return as-is.
+   * - Otherwise call the `get_email_by_username` RPC (a SECURITY DEFINER
+   *   SQL function that bypasses RLS, so username lookups work even when
+   *   the `profiles.email` column is not publicly readable).
+   *
+   * SQL to create the function (run once in Supabase SQL Editor):
+   *
+   *   CREATE OR REPLACE FUNCTION get_email_by_username(p_username text)
+   *   RETURNS text LANGUAGE sql SECURITY DEFINER SET search_path = public AS $$
+   *     SELECT email FROM profiles
+   *     WHERE username = lower(trim(p_username))
+   *     LIMIT 1;
+   *   $$;
+   */
   const resolveEmail = async (identifier: string): Promise<string | null> => {
-    if (identifier.includes('@')) return identifier
-    const { data, error } = await supabase
-      .from('profiles')
-      .select('email')
-      .eq('username', identifier.toLowerCase().trim())
-      .single()
-    if (error || !data?.email) return null
-    return data.email
+    const trimmed = identifier.trim()
+    if (trimmed.includes('@')) return trimmed.toLowerCase()
+
+    // Use RPC so the lookup is not blocked by RLS on the profiles table
+    const { data, error } = await supabase.rpc('get_email_by_username', {
+      p_username: trimmed.toLowerCase(),
+    })
+
+    if (error) {
+      console.error('resolveEmail RPC error:', error.message)
+      return null
+    }
+
+    // data is the scalar TEXT value returned by the function
+    return typeof data === 'string' ? data : null
   }
 
   const handleLogin = async () => {
