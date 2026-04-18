@@ -55,6 +55,14 @@ export default function TabsLayout() {
           ),
         }}
       />
+      {/* Hide activity from the tab bar — it's navigated to programmatically */}
+      <Tabs.Screen
+        name="activity"
+        options={{
+          href: null,          // removes it from the tab bar entirely
+          tabBarStyle: { display: 'none' }, // hides tab bar when on this screen
+        }}
+      />
     </Tabs>
   )
 }

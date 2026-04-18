@@ -54,16 +54,32 @@ export default function ProfileScreen() {
 
   const onRefresh = () => { setRefreshing(true); fetchData() }
 
-  // Derived stats from real activity data
-  const bestRun = activities.length > 0
-    ? Math.max(...activities.map(a => a.distance))
-    : 0
-
+  // Derive ALL stats from real activity data (not the RPC-cached profile columns
+  // which only update when increment_stats succeeds)
+  const totalDistance = activities.reduce((sum, a) => sum + (a.distance ?? 0), 0)
+  const totalRuns = activities.length
+  const totalCalories = activities.reduce((sum, a) => sum + (a.calories ?? 0), 0)
+  const bestRun = activities.length > 0 ? Math.max(...activities.map(a => a.distance)) : 0
   const avgPace = activities.length > 0
     ? activities.reduce((sum, a) => sum + (a.pace ?? 0), 0) / activities.length
     : 0
 
-  const totalCalories = activities.reduce((sum, a) => sum + (a.calories ?? 0), 0)
+  // Weekly chart — last 7 days, distance per day
+  const weeklyData = (() => {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
+    const today = new Date()
+    const result = Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(today)
+      d.setDate(today.getDate() - (6 - i))
+      return { label: days[d.getDay()], date: d.toDateString(), km: 0 }
+    })
+    activities.forEach(a => {
+      const aDate = new Date(a.started_at).toDateString()
+      const slot = result.find(r => r.date === aDate)
+      if (slot) slot.km += a.distance ?? 0
+    })
+    return result
+  })()
 
   const joinDate = profile?.created_at
     ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
@@ -113,15 +129,13 @@ export default function ProfileScreen() {
         <View style={styles.statsCard}>
           <View style={styles.statItem}>
             <FontAwesome5 name="road" size={15} color={Colors.primary} />
-            <Text style={styles.statValue}>
-              {(profile?.total_distance ?? 0).toFixed(1)}
-            </Text>
+            <Text style={styles.statValue}>{totalDistance.toFixed(1)}</Text>
             <Text style={styles.statLabel}>Total km</Text>
           </View>
           <View style={styles.statDivider} />
           <View style={styles.statItem}>
             <FontAwesome5 name="flag-checkered" size={15} color={Colors.primary} />
-            <Text style={styles.statValue}>{profile?.total_runs ?? 0}</Text>
+            <Text style={styles.statValue}>{totalRuns}</Text>
             <Text style={styles.statLabel}>Runs</Text>
           </View>
           <View style={styles.statDivider} />
@@ -149,12 +163,47 @@ export default function ProfileScreen() {
           <View style={styles.secondaryCard}>
             <FontAwesome5 name="chart-line" size={13} color={Colors.primary} style={styles.secIcon} />
             <Text style={styles.secondaryValue}>
-              {profile?.total_runs
-                ? ((profile.total_distance ?? 0) / profile.total_runs).toFixed(1)
-                : '0.0'} km
+              {totalRuns ? (totalDistance / totalRuns).toFixed(1) : '0.0'} km
             </Text>
             <Text style={styles.secondaryLabel}>Avg run</Text>
           </View>
+        </View>
+      </View>
+
+
+      {/* ── Weekly Distance Chart ── */}
+      <View style={styles.chartCard}>
+        <Text style={styles.chartTitle}>This Week</Text>
+        <Text style={styles.chartSubtitle}>
+          {weeklyData.reduce((s, d) => s + d.km, 0).toFixed(1)} km in 7 days
+        </Text>
+        <View style={styles.chartBars}>
+          {(() => {
+            const maxKm = Math.max(...weeklyData.map(d => d.km), 0.1)
+            const todayLabel = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()]
+            return weeklyData.map((day, i) => (
+              <View key={i} style={styles.barCol}>
+                <Text style={styles.barKm}>
+                  {day.km > 0 ? day.km.toFixed(1) : ''}
+                </Text>
+                <View style={styles.barTrack}>
+                  <View
+                    style={[
+                      styles.barFill,
+                      { height: `${Math.round((day.km / maxKm) * 100)}%` },
+                      day.label === todayLabel && styles.barFillToday,
+                    ]}
+                  />
+                </View>
+                <Text style={[
+                  styles.barLabel,
+                  day.label === todayLabel && styles.barLabelToday,
+                ]}>
+                  {day.label}
+                </Text>
+              </View>
+            ))
+          })()}
         </View>
       </View>
 
@@ -305,6 +354,34 @@ const styles = StyleSheet.create({
   },
   emptyTitle: { color: Colors.text, fontSize: 18, fontWeight: '700', marginBottom: 6 },
   emptyText: { color: Colors.textMuted, fontSize: 14, textAlign: 'center', lineHeight: 20 },
+
+
+  // Weekly chart
+  chartCard: {
+    backgroundColor: Colors.card,
+    marginHorizontal: 16, marginTop: 8, marginBottom: 4,
+    borderRadius: 18, padding: 18,
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  chartTitle: { color: Colors.text, fontSize: 16, fontWeight: '700', marginBottom: 2 },
+  chartSubtitle: { color: Colors.textMuted, fontSize: 12, marginBottom: 16 },
+  chartBars: { flexDirection: 'row', alignItems: 'flex-end', height: 110, gap: 6 },
+  barCol: { flex: 1, alignItems: 'center' },
+  barKm: { color: Colors.primary, fontSize: 9, fontWeight: '700', marginBottom: 3, height: 12 },
+  barTrack: {
+    width: '100%', flex: 1,
+    backgroundColor: Colors.card2,
+    borderRadius: 6, overflow: 'hidden',
+    justifyContent: 'flex-end',
+    borderWidth: 1, borderColor: Colors.border,
+  },
+  barFill: {
+    width: '100%', backgroundColor: Colors.primary,
+    borderRadius: 6, minHeight: 3,
+  },
+  barFillToday: { backgroundColor: Colors.primary, opacity: 1 },
+  barLabel: { color: Colors.textMuted, fontSize: 10, marginTop: 5 },
+  barLabelToday: { color: Colors.primary, fontWeight: '700' },
 
   logoutWrapper: {
     position: 'absolute', bottom: 0, left: 0, right: 0,

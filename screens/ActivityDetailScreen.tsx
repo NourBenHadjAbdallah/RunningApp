@@ -1,5 +1,5 @@
 // screens/ActivityDetailScreen.tsx
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useState, useRef } from 'react'
 import {
   View,
   Text,
@@ -16,14 +16,50 @@ import { activityService, Activity } from '../services/activityService'
 import { formatTime, formatPace, formatDate } from '../utils/calculations'
 import { Colors } from '../constants/colors'
 
+function getBoundingRegion(coords: { latitude: number; longitude: number }[]) {
+  if (coords.length === 0) return null
+
+  const lats = coords.map((c) => c.latitude)
+  const lngs = coords.map((c) => c.longitude)
+
+  const minLat = Math.min(...lats)
+  const maxLat = Math.max(...lats)
+  const minLng = Math.min(...lngs)
+  const maxLng = Math.max(...lngs)
+
+  const latDelta = Math.max((maxLat - minLat) * 1.4, 0.008)
+  const lngDelta = Math.max((maxLng - minLng) * 1.4, 0.008)
+
+  return {
+    latitude: (minLat + maxLat) / 2,
+    longitude: (minLng + maxLng) / 2,
+    latitudeDelta: latDelta,
+    longitudeDelta: lngDelta,
+  }
+}
+
 export default function ActivityDetailScreen() {
   const { id } = useLocalSearchParams<{ id: string }>()
   const [activity, setActivity] = useState<Activity | null>(null)
   const [loading, setLoading] = useState(true)
+  const mapRef = useRef<MapView>(null)
 
   useEffect(() => {
     if (id) loadActivity()
   }, [id])
+
+  useEffect(() => {
+    if (!activity || !mapRef.current) return
+    const coords = activity.route ?? []
+    if (coords.length > 1) {
+      setTimeout(() => {
+        mapRef.current?.fitToCoordinates(coords, {
+          edgePadding: { top: 40, right: 40, bottom: 40, left: 40 },
+          animated: true,
+        })
+      }, 400)
+    }
+  }, [activity])
 
   const loadActivity = async () => {
     setLoading(true)
@@ -47,7 +83,7 @@ export default function ActivityDetailScreen() {
         style: 'destructive',
         onPress: () => {
           Alert.alert('Deleted', 'Activity has been removed.')
-          router.back()
+          router.replace('/(tabs)')
         },
       },
     ])
@@ -69,19 +105,25 @@ export default function ActivityDetailScreen() {
     )
   }
 
-  const routeCoords = activity.route || []
+  const routeCoords = activity.route ?? []
+  const mapRegion = getBoundingRegion(routeCoords) ?? {
+    latitude: 36.8065,
+    longitude: 10.1815,
+    latitudeDelta: 0.015,
+    longitudeDelta: 0.015,
+  }
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <View style={styles.mapContainer}>
         <MapView
+          ref={mapRef}
           style={styles.map}
-          initialRegion={{
-            latitude: routeCoords[0]?.latitude || 36.8065,
-            longitude: routeCoords[0]?.longitude || 10.1815,
-            latitudeDelta: 0.015,
-            longitudeDelta: 0.015,
-          }}
+          region={mapRegion}
+          scrollEnabled={false}
+          zoomEnabled={false}
+          rotateEnabled={false}
+          pitchEnabled={false}
         >
           {routeCoords.length > 1 && (
             <Polyline
@@ -92,19 +134,22 @@ export default function ActivityDetailScreen() {
               lineJoin="round"
             />
           )}
-
           {routeCoords.length > 0 && (
             <Marker coordinate={routeCoords[0]} title="Start">
               <View style={styles.startMarker} />
             </Marker>
           )}
-
           {routeCoords.length > 1 && (
             <Marker coordinate={routeCoords[routeCoords.length - 1]} title="Finish">
               <View style={styles.finishMarker} />
             </Marker>
           )}
         </MapView>
+
+        {/* Back button overlaid on map */}
+        <TouchableOpacity style={styles.backBtn} onPress={() => router.replace('/(tabs)')}>
+          <FontAwesome5 name="chevron-left" size={16} color="#fff" />
+        </TouchableOpacity>
 
         <View style={styles.mapOverlay}>
           <Text style={styles.distanceBig}>{activity.distance.toFixed(2)}</Text>
@@ -170,6 +215,18 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
   mapContainer: { height: 340, position: 'relative' },
   map: { flex: 1 },
+
+  backBtn: {
+    position: 'absolute',
+    top: 52,
+    left: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
 
   mapOverlay: {
     position: 'absolute',
