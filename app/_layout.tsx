@@ -29,11 +29,29 @@ export default function RootLayout() {
     const inAuthGroup = segments[0] === '(auth)'
 
     if (session && inAuthGroup) {
-      router.replace('/(tabs)')
+      checkOnboarding(session.user.id)
     } else if (!session && !inAuthGroup) {
       router.replace('/(auth)/login')
     }
   }, [session, loading, segments])
+
+  const checkOnboarding = async (userId: string) => {
+    try {
+      const { data } = await supabase
+        .from('profiles')
+        .select('onboarding_done')
+        .eq('id', userId)
+        .single()
+
+      if (data?.onboarding_done) {
+        router.replace('/(tabs)')
+      } else {
+        router.replace('/(tabs)/onboarding')
+      }
+    } catch {
+      router.replace('/(tabs)')
+    }
+  }
 
   if (loading) {
     return (

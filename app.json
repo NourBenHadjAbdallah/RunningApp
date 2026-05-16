@@ -10,11 +10,27 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
+      "bundleIdentifier": "com.runningapp",
+      "infoPlist": {
+        "UIBackgroundModes": ["location", "fetch"],
+        "NSLocationWhenInUseUsageDescription": "RunUP needs your location to track your runs.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "RunUP needs your location while running, even when the screen is locked, to accurately track your distance and route.",
+        "NSLocationAlwaysUsageDescription": "RunUP needs your location while running, even when the screen is locked, to accurately track your distance and route."
+      },
       "config": {
         "googleMapsApiKey": "YOUR_IOS_API_KEY"
       }
     },
     "android": {
+      "package": "com.runningapp",
+      "permissions": [
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS"
+      ],
       "config": {
         "googleMaps": {
           "apiKey": "AIzaSyCkq7pj2JDp36E0SScCYk6HhfW5OvB_wkc"
@@ -27,7 +43,21 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "runningapp",
+              "host": "auth",
+              "pathPrefix": "/callback"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     },
     "web": {
       "output": "static",
@@ -35,7 +65,29 @@
     },
     "plugins": [
       "expo-router",
-      "expo-location",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "RunUP needs your location while running, even when the screen is locked, to accurately track your distance and route.",
+          "locationWhenInUsePermission": "RunUP needs your location to track your runs.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/icon.png",
+          "color": "#6C63FF",
+          "sounds": []
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow saving your run share cards."
+        }
+      ],
       [
         "expo-splash-screen",
         {
@@ -49,7 +101,8 @@
         }
       ],
       "expo-secure-store",
-      "expo-font"
+      "expo-font",
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": true,

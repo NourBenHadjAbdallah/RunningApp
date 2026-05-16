@@ -1,3 +1,5 @@
+// utils/calculations.ts
+
 export const haversineDistance = (
   a: { latitude: number; longitude: number },
   b: { latitude: number; longitude: number }
@@ -40,4 +42,12 @@ export const formatDate = (iso: string): string => {
 
 export const calculateCalories = (distanceKm: number): number => {
   return Math.round(distanceKm * 60)
+}
+
+/**
+ * Estimates step count from distance.
+ * Average running stride length ≈ 1.4 m (0.0014 km).
+ */
+export const estimateSteps = (distanceKm: number, strideLengthM = 1.4): number => {
+  return Math.round((distanceKm * 1000) / strideLengthM)
 }
