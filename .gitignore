@@ -30,8 +30,14 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# ─── Secrets and environment files ───────────────────────────────────────────
+# NEVER commit these. Use EAS secrets for CI/CD builds.
+.env
+.env.local
+.env.*.local
+.env.development
+.env.staging
+.env.production
 
 # typescript
 *.tsbuildinfo

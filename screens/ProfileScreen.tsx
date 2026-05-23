@@ -1,89 +1,159 @@
+// screens/ProfileScreen.tsx
+//
+// Single profile screen for EVERYONE.
+// - No `userId` param (or userId === current user) → own profile (self view)
+// - `userId` param present and different           → other user's profile
+//
+// Navigate here from anywhere:
+//   router.push(`/profile/${someUserId}`)   ← other user
+//   router.push('/(tabs)/profile')          ← own profile via tab bar (no param)
+//
+// Self view shows:  settings gear, post button
+// Other view shows: back button, follow/following button
+
 import React, { useEffect, useState, useCallback } from 'react'
 import {
   View, Text, FlatList, StyleSheet, TouchableOpacity,
-  ActivityIndicator, Alert, RefreshControl,
+  ActivityIndicator, Alert, RefreshControl, ScrollView,
 } from 'react-native'
 import { FontAwesome5 } from '@expo/vector-icons'
+import { router, useLocalSearchParams } from 'expo-router'
 import { supabase } from '../services/supabase'
-import { activityService, Activity } from '../services/activityService'
-import { formatTime, formatDate, formatPace } from '../utils/calculations'
+import { activityService, Activity, Group } from '../services/activityService'
+import { getAwardedTrophies } from '../services/trophyService'
+import { Trophy } from '../services/trophyDefinitions'
+import { followService } from '../services/followService'
 import { Colors } from '../constants/colors'
 
+import { ProfileHero } from '../components/Profile/ProfileHero'
+import { ProfileTabBar, ProfileTab } from '../components/Profile/ProfileTabBar'
+import { ActivityCard } from '../components/ActivityCard'
+import { EmptyState } from '../components/Profile/EmptyState'
+import { CreatePostModal } from '../components/Profile/CreatePostModal'
+import { TrophySection } from '../components/Profile/TrophySection'
+import { WeeklyChartCard } from '../components/Profile/WeeklyChartCard'
+import { MonthlyCalendar } from '../components/Profile/MonthlyCalendar'
+import { ChallengesSection } from '../components/Profile/ChallengesSection'
+
 interface Profile {
+  id?: string
   username: string
   full_name: string
   total_distance: number
   total_runs: number
   created_at?: string
+  location?: string | null
+  avatar_url?: string | null
 }
 
+
+
 export default function ProfileScreen() {
-  const [profile, setProfile] = useState<Profile | null>(null)
-  const [activities, setActivities] = useState<Activity[]>([])
-  const [email, setEmail] = useState<string>('')
-  const [loading, setLoading] = useState(true)
-  const [refreshing, setRefreshing] = useState(false)
+  const { id: userId } = useLocalSearchParams<{ id?: string }>()
+
+  const [currentUserId,    setCurrentUserId]    = useState<string | null>(null)
+  const [isSelf,           setIsSelf]           = useState(true)
+  const [isFollowing,      setIsFollowing]      = useState(false)
+  const [followLoading,    setFollowLoading]    = useState(false)
+
+  const [profile,          setProfile]          = useState<Profile | null>(null)
+  const [activities,       setActivities]       = useState<Activity[]>([])
+  const [extraTrophies,    setExtraTrophies]    = useState<Trophy[]>([])
+  const [joinedGroups,     setJoinedGroups]     = useState<Group[]>([])
+  const [followersCount,   setFollowersCount]   = useState(0)
+  const [followingCount,   setFollowingCount]   = useState(0)
+  const [loading,          setLoading]          = useState(true)
+  const [refreshing,       setRefreshing]       = useState(false)
+  const [activeTab,        setActiveTab]        = useState<ProfileTab>('stats')
+  const [postModalVisible, setPostModalVisible] = useState(false)
+
+  const openSheet = (a: Activity) =>
+    router.push({ pathname: '/(tabs)/activity', params: { id: a.id, source: 'profile' } })
 
   const fetchData = useCallback(async () => {
     try {
-      // Fetch auth user for email + join date
       const { data: { user } } = await supabase.auth.getUser()
-      if (user?.email) setEmail(user.email)
+      const meId = user?.id ?? null
+      setCurrentUserId(meId)
 
-      const [profileData, activityData] = await Promise.all([
-        activityService.getMyProfile(),
-        activityService.getMyActivities(),
-      ])
-      if (profileData) setProfile(profileData)
-      setActivities(activityData)
+      const selfView = !userId || userId === meId
+      const targetId = selfView ? meId : userId
+      setIsSelf(selfView)
+
+      if (!targetId) return
+
+      if (selfView) {
+        // ── Own profile ────────────────────────────────────────────────────
+        const [profileData, activityData, allGroups, awarded] = await Promise.all([
+          activityService.getMyProfile(),
+          activityService.getMyActivities(),
+          activityService.getGroups(),
+          getAwardedTrophies(),
+        ])
+
+        if (profileData) setProfile(profileData)
+        setActivities(activityData)
+        setExtraTrophies(awarded)
+        setJoinedGroups(allGroups.filter((g: Group) => g.joined))
+
+        const [{ count: followers }, { count: following }] = await Promise.all([
+          supabase.from('follows').select('*', { count: 'exact', head: true }).eq('following_id', targetId),
+          supabase.from('follows').select('*', { count: 'exact', head: true }).eq('follower_id',  targetId),
+        ])
+        setFollowersCount(followers ?? 0)
+        setFollowingCount(following ?? 0)
+
+      } else {
+        // ── Other user ─────────────────────────────────────────────────────
+        const [profData, { data: actsData }, following, counts] = await Promise.all([
+          followService.getPublicProfile(targetId),
+          supabase
+            .from('activities')
+            .select('*')
+            .eq('user_id', targetId)
+            .order('created_at', { ascending: false })
+            .limit(50),
+          followService.isFollowing(targetId).catch(() => false),
+          followService.getCounts(targetId),
+        ])
+
+        if (profData) setProfile(profData as Profile)
+        setActivities((actsData as Activity[]) ?? [])
+        setIsFollowing(following as boolean)
+        setFollowersCount(counts.followers)
+        setFollowingCount(counts.following)
+        setExtraTrophies([])
+        setJoinedGroups([])
+      }
     } catch (e) {
       console.error(e)
     }
     setLoading(false)
     setRefreshing(false)
-  }, [])
+  }, [userId])
 
-  useEffect(() => { fetchData() }, [])
-
-  const handleLogout = () => {
-    Alert.alert('Log Out', 'Are you sure you want to log out?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Log Out', style: 'destructive', onPress: () => supabase.auth.signOut() },
-    ])
-  }
+  useEffect(() => {
+    fetchData()
+    setActiveTab('stats')
+  }, [fetchData])
 
   const onRefresh = () => { setRefreshing(true); fetchData() }
 
-  // Derive ALL stats from real activity data (not the RPC-cached profile columns
-  // which only update when increment_stats succeeds)
-  const totalDistance = activities.reduce((sum, a) => sum + (a.distance ?? 0), 0)
+  const handleFollow = async () => {
+    if (!userId || isSelf) return
+    setFollowLoading(true)
+    try {
+      const next = await followService.toggle(userId, isFollowing)
+      setIsFollowing(next)
+      setFollowersCount(c => c + (next ? 1 : -1))
+    } catch (e: any) {
+      Alert.alert('Error', e?.message ?? 'Failed to update follow')
+    } finally {
+      setFollowLoading(false)
+    }
+  }
+
   const totalRuns = activities.length
-  const totalCalories = activities.reduce((sum, a) => sum + (a.calories ?? 0), 0)
-  const bestRun = activities.length > 0 ? Math.max(...activities.map(a => a.distance)) : 0
-  const avgPace = activities.length > 0
-    ? activities.reduce((sum, a) => sum + (a.pace ?? 0), 0) / activities.length
-    : 0
-
-  // Weekly chart — last 7 days, distance per day
-  const weeklyData = (() => {
-    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat']
-    const today = new Date()
-    const result = Array.from({ length: 7 }, (_, i) => {
-      const d = new Date(today)
-      d.setDate(today.getDate() - (6 - i))
-      return { label: days[d.getDay()], date: d.toDateString(), km: 0 }
-    })
-    activities.forEach(a => {
-      const aDate = new Date(a.started_at).toDateString()
-      const slot = result.find(r => r.date === aDate)
-      if (slot) slot.km += a.distance ?? 0
-    })
-    return result
-  })()
-
-  const joinDate = profile?.created_at
-    ? new Date(profile.created_at).toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
-    : null
 
   if (loading) {
     return (
@@ -93,305 +163,143 @@ export default function ProfileScreen() {
     )
   }
 
-  const ListHeader = () => (
-    <View>
-      {/* ── Profile card ── */}
-      <View style={styles.profileHeader}>
-        {/* Avatar */}
-        <View style={styles.avatarWrap}>
-          <View style={styles.avatar}>
-            <Text style={styles.avatarText}>
-              {profile?.full_name?.[0]?.toUpperCase() ?? profile?.username?.[0]?.toUpperCase() ?? '?'}
-            </Text>
-          </View>
+  const StatsContent = () => (
+    <ScrollView
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ paddingBottom: 140 }}
+      refreshControl={
+        <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />
+      }
+    >
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <FontAwesome5 name="chart-area" size={14} color={Colors.primary} />
+          <Text style={styles.sectionTitle}>Weekly Progress</Text>
         </View>
-
-        <Text style={styles.fullName}>{profile?.full_name ?? 'Runner'}</Text>
-        <Text style={styles.username}>@{profile?.username ?? ''}</Text>
-
-        {/* Email row */}
-        {email ? (
-          <View style={styles.metaRow}>
-            <FontAwesome5 name="envelope" size={11} color={Colors.textMuted} />
-            <Text style={styles.metaText}>{email}</Text>
-          </View>
-        ) : null}
-
-        {/* Join date */}
-        {joinDate ? (
-          <View style={styles.metaRow}>
-            <FontAwesome5 name="calendar-alt" size={11} color={Colors.textMuted} />
-            <Text style={styles.metaText}>Joined {joinDate}</Text>
-          </View>
-        ) : null}
-
-        {/* ── Primary stats ── */}
-        <View style={styles.statsCard}>
-          <View style={styles.statItem}>
-            <FontAwesome5 name="road" size={15} color={Colors.primary} />
-            <Text style={styles.statValue}>{totalDistance.toFixed(1)}</Text>
-            <Text style={styles.statLabel}>Total km</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <FontAwesome5 name="flag-checkered" size={15} color={Colors.primary} />
-            <Text style={styles.statValue}>{totalRuns}</Text>
-            <Text style={styles.statLabel}>Runs</Text>
-          </View>
-          <View style={styles.statDivider} />
-          <View style={styles.statItem}>
-            <FontAwesome5 name="fire" size={15} color={Colors.primary} />
-            <Text style={styles.statValue}>{totalCalories.toLocaleString()}</Text>
-            <Text style={styles.statLabel}>kcal</Text>
-          </View>
-        </View>
-
-        {/* ── Secondary stats ── */}
-        <View style={styles.secondaryRow}>
-          <View style={styles.secondaryCard}>
-            <FontAwesome5 name="trophy" size={13} color={Colors.primary} style={styles.secIcon} />
-            <Text style={styles.secondaryValue}>{bestRun.toFixed(2)} km</Text>
-            <Text style={styles.secondaryLabel}>Best run</Text>
-          </View>
-
-          <View style={styles.secondaryCard}>
-            <FontAwesome5 name="tachometer-alt" size={13} color={Colors.primary} style={styles.secIcon} />
-            <Text style={styles.secondaryValue}>{formatPace(avgPace)}</Text>
-            <Text style={styles.secondaryLabel}>Avg pace</Text>
-          </View>
-
-          <View style={styles.secondaryCard}>
-            <FontAwesome5 name="chart-line" size={13} color={Colors.primary} style={styles.secIcon} />
-            <Text style={styles.secondaryValue}>
-              {totalRuns ? (totalDistance / totalRuns).toFixed(1) : '0.0'} km
-            </Text>
-            <Text style={styles.secondaryLabel}>Avg run</Text>
-          </View>
-        </View>
+        <WeeklyChartCard activities={activities} />
       </View>
 
+      <View style={styles.section}>
+        <View style={styles.sectionHeader}>
+          <FontAwesome5 name="calendar" size={14} color={Colors.primary} />
+          <Text style={styles.sectionTitle}>Monthly Calendar</Text>
+        </View>
+        <MonthlyCalendar activities={activities} onDayPress={openSheet} />
+      </View>
 
-      {/* ── Weekly Distance Chart ── */}
-      <View style={styles.chartCard}>
-        <Text style={styles.chartTitle}>This Week</Text>
-        <Text style={styles.chartSubtitle}>
-          {weeklyData.reduce((s, d) => s + d.km, 0).toFixed(1)} km in 7 days
-        </Text>
-        <View style={styles.chartBars}>
-          {(() => {
-            const maxKm = Math.max(...weeklyData.map(d => d.km), 0.1)
-            const todayLabel = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][new Date().getDay()]
-            return weeklyData.map((day, i) => (
-              <View key={i} style={styles.barCol}>
-                <Text style={styles.barKm}>
-                  {day.km > 0 ? day.km.toFixed(1) : ''}
-                </Text>
-                <View style={styles.barTrack}>
-                  <View
-                    style={[
-                      styles.barFill,
-                      { height: `${Math.round((day.km / maxKm) * 100)}%` },
-                      day.label === todayLabel && styles.barFillToday,
-                    ]}
-                  />
+      <TrophySection activities={activities} extraTrophies={extraTrophies} />
+
+      {isSelf && (
+        <ChallengesSection activities={activities} />
+      )}
+
+      {joinedGroups.length > 0 && (
+        <View style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <FontAwesome5 name="users" size={14} color={Colors.primary} />
+            <Text style={styles.sectionTitle}>{isSelf ? 'My Groups' : 'Groups'}</Text>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.groupsScroll}>
+            {joinedGroups.map(g => (
+              <View key={g.id} style={styles.groupChip}>
+                <Text style={styles.groupIcon}>{g.icon}</Text>
+                <View>
+                  <Text style={styles.groupName} numberOfLines={1}>{g.name}</Text>
+                  <Text style={styles.groupMembers}>{g.member_count} members</Text>
                 </View>
-                <Text style={[
-                  styles.barLabel,
-                  day.label === todayLabel && styles.barLabelToday,
-                ]}>
-                  {day.label}
-                </Text>
               </View>
-            ))
-          })()}
+            ))}
+          </ScrollView>
         </View>
-      </View>
+      )}
+    </ScrollView>
+  )
 
-      <Text style={styles.sectionTitle}>My Runs</Text>
-    </View>
+  const RunsContent = () => (
+    <FlatList
+      data={activities}
+      keyExtractor={item => item.id}
+      renderItem={({ item }) => (
+        <ActivityCard
+          variant="profile"
+          item={item}
+          onPress={a => router.push({ pathname: '/(tabs)/activity', params: { id: a.id, source: 'profile' } })}
+        />
+      )}
+      ListEmptyComponent={
+        <EmptyState
+          icon="shoe-prints"
+          title="No runs yet"
+          message={isSelf
+            ? 'Start your first run and it will appear here!'
+            : "This runner hasn't logged any activities yet."}
+        />
+      }
+      refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />}
+      contentContainerStyle={{ paddingBottom: 140, paddingTop: 8 }}
+      showsVerticalScrollIndicator={false}
+    />
   )
 
   return (
     <View style={styles.container}>
-      <FlatList
-        data={activities}
-        keyExtractor={(item) => item.id}
-        renderItem={({ item }) => (
-          <View style={styles.activityCard}>
-            <View style={styles.activityIconCircle}>
-              <FontAwesome5 name="running" size={15} color={Colors.primary} />
-            </View>
-            <View style={styles.activityMiddle}>
-              <Text style={styles.activityTitle}>{item.title}</Text>
-              <Text style={styles.activityDate}>{formatDate(item.started_at)}</Text>
-            </View>
-            <View style={styles.activityRight}>
-              <Text style={styles.activityDistance}>{item.distance.toFixed(2)} km</Text>
-              <Text style={styles.activityTime}>{formatTime(item.duration)}</Text>
-              {item.pace > 0 && (
-                <Text style={styles.activityPace}>{formatPace(item.pace)}/km</Text>
-              )}
-            </View>
-          </View>
-        )}
-        ListHeaderComponent={ListHeader}
-        ListEmptyComponent={
-          <View style={styles.empty}>
-            <View style={styles.emptyIconCircle}>
-              <FontAwesome5 name="shoe-prints" size={26} color={Colors.textMuted} />
-            </View>
-            <Text style={styles.emptyTitle}>No runs yet</Text>
-            <Text style={styles.emptyText}>Start your first run and it will appear here!</Text>
-          </View>
-        }
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={Colors.primary} />
-        }
-        contentContainerStyle={{ paddingBottom: 120 }}
-        showsVerticalScrollIndicator={false}
+      <ProfileHero
+        profile={profile}
+        followersCount={followersCount}
+        followingCount={followingCount}
+        totalRuns={totalRuns}
+        isSelf={isSelf}
+        onAddPost={isSelf ? () => setPostModalVisible(true) : undefined}
+        isFollowing={isFollowing}
+        followLoading={followLoading}
+        onFollow={!isSelf ? handleFollow : undefined}
+        onBack={!isSelf ? () => router.back() : undefined}
+        avatarUrl={profile?.avatar_url ?? null}
+        onAvatarUpdated={(url) => setProfile(p => p ? { ...p, avatar_url: url } : p)}
       />
 
-      {/* Logout */}
-      <View style={styles.logoutWrapper}>
-        <TouchableOpacity style={styles.logoutBtn} onPress={handleLogout}>
-          <FontAwesome5 name="sign-out-alt" size={15} color={Colors.danger} style={{ marginRight: 8 }} />
-          <Text style={styles.logoutText}>Log Out</Text>
-        </TouchableOpacity>
+      <ProfileTabBar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        availableTabs={['stats', 'runs']}
+      />
+
+      <View style={{ flex: 1 }}>
+        {activeTab === 'stats'  && <StatsContent />}
+        {activeTab === 'runs'   && <RunsContent />}
       </View>
+
+      {isSelf && (
+        <CreatePostModal
+          visible={postModalVisible}
+          onClose={() => setPostModalVisible(false)}
+          groups={joinedGroups}
+        />
+      )}
     </View>
   )
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
-  center: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
+  center:    { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: Colors.background },
 
-  profileHeader: {
-    alignItems: 'center',
-    paddingTop: 60, paddingBottom: 24, paddingHorizontal: 20,
+  section:       { marginTop: 20 },
+  sectionHeader: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 16, marginBottom: 10,
+  },
+  sectionTitle: { color: Colors.text, fontSize: 15, fontWeight: '700' },
+
+  groupsScroll: { paddingHorizontal: 16, paddingVertical: 4, gap: 10 },
+  groupChip: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
     backgroundColor: Colors.card,
-    borderBottomWidth: 1, borderColor: Colors.border,
-    marginBottom: 8,
+    borderRadius: 14, paddingHorizontal: 14, paddingVertical: 12,
+    borderWidth: 1, borderColor: Colors.border, minWidth: 140,
   },
-  avatarWrap: { marginBottom: 14 },
-  avatar: {
-    width: 88, height: 88, borderRadius: 44,
-    backgroundColor: Colors.primary,
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 3, borderColor: Colors.background,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4, shadowRadius: 12, elevation: 8,
-  },
-  avatarText: { color: '#fff', fontSize: 36, fontWeight: '800' },
+  groupIcon:    { fontSize: 22 },
+  groupName:    { color: Colors.text, fontSize: 13, fontWeight: '700', maxWidth: 110 },
+  groupMembers: { color: Colors.textMuted, fontSize: 11, marginTop: 2 },
 
-  fullName: { color: Colors.text, fontSize: 22, fontWeight: '700', marginBottom: 3 },
-  username: { color: Colors.textMuted, fontSize: 14, marginBottom: 12 },
-
-  metaRow: {
-    flexDirection: 'row', alignItems: 'center', gap: 6,
-    marginBottom: 6,
-  },
-  metaText: { color: Colors.textMuted, fontSize: 13 },
-
-  // Primary stats
-  statsCard: {
-    flexDirection: 'row',
-    backgroundColor: Colors.card2, borderRadius: 16,
-    paddingVertical: 18, width: '100%',
-    borderWidth: 1, borderColor: Colors.border,
-    marginTop: 20, marginBottom: 12,
-  },
-  statItem: { flex: 1, alignItems: 'center', gap: 6 },
-  statValue: { color: Colors.primary, fontSize: 22, fontWeight: '800' },
-  statLabel: { color: Colors.textMuted, fontSize: 12 },
-  statDivider: { width: 1, backgroundColor: Colors.border },
-
-  // Secondary stats
-  secondaryRow: { flexDirection: 'row', gap: 10, width: '100%' },
-  secondaryCard: {
-    flex: 1, alignItems: 'center',
-    backgroundColor: Colors.card2, borderRadius: 14,
-    paddingVertical: 14, borderWidth: 1, borderColor: Colors.border,
-  },
-  secIcon: { marginBottom: 6 },
-  secondaryValue: { color: Colors.text, fontSize: 15, fontWeight: '700' },
-  secondaryLabel: { color: Colors.textMuted, fontSize: 11, marginTop: 2 },
-
-  sectionTitle: {
-    color: Colors.text, fontSize: 18, fontWeight: '700',
-    paddingHorizontal: 20, paddingTop: 16, paddingBottom: 10,
-  },
-
-  activityCard: {
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: Colors.card,
-    marginHorizontal: 16, marginBottom: 10,
-    borderRadius: 16, padding: 14,
-    borderWidth: 1, borderColor: Colors.border,
-  },
-  activityIconCircle: {
-    width: 42, height: 42, borderRadius: 21,
-    backgroundColor: Colors.card2,
-    justifyContent: 'center', alignItems: 'center',
-    borderWidth: 1, borderColor: Colors.border,
-    marginRight: 12,
-  },
-  activityMiddle: { flex: 1 },
-  activityTitle: { color: Colors.text, fontSize: 15, fontWeight: '600' },
-  activityDate: { color: Colors.textMuted, fontSize: 12, marginTop: 3 },
-  activityRight: { alignItems: 'flex-end' },
-  activityDistance: { color: Colors.primary, fontSize: 16, fontWeight: '700' },
-  activityTime: { color: Colors.textMuted, fontSize: 12, marginTop: 3 },
-  activityPace: { color: Colors.textDim, fontSize: 11, marginTop: 2 },
-
-  empty: { alignItems: 'center', paddingVertical: 48, paddingHorizontal: 40 },
-  emptyIconCircle: {
-    width: 72, height: 72, borderRadius: 36,
-    backgroundColor: Colors.card2, justifyContent: 'center',
-    alignItems: 'center', marginBottom: 14,
-    borderWidth: 1, borderColor: Colors.border,
-  },
-  emptyTitle: { color: Colors.text, fontSize: 18, fontWeight: '700', marginBottom: 6 },
-  emptyText: { color: Colors.textMuted, fontSize: 14, textAlign: 'center', lineHeight: 20 },
-
-
-  // Weekly chart
-  chartCard: {
-    backgroundColor: Colors.card,
-    marginHorizontal: 16, marginTop: 8, marginBottom: 4,
-    borderRadius: 18, padding: 18,
-    borderWidth: 1, borderColor: Colors.border,
-  },
-  chartTitle: { color: Colors.text, fontSize: 16, fontWeight: '700', marginBottom: 2 },
-  chartSubtitle: { color: Colors.textMuted, fontSize: 12, marginBottom: 16 },
-  chartBars: { flexDirection: 'row', alignItems: 'flex-end', height: 110, gap: 6 },
-  barCol: { flex: 1, alignItems: 'center' },
-  barKm: { color: Colors.primary, fontSize: 9, fontWeight: '700', marginBottom: 3, height: 12 },
-  barTrack: {
-    width: '100%', flex: 1,
-    backgroundColor: Colors.card2,
-    borderRadius: 6, overflow: 'hidden',
-    justifyContent: 'flex-end',
-    borderWidth: 1, borderColor: Colors.border,
-  },
-  barFill: {
-    width: '100%', backgroundColor: Colors.primary,
-    borderRadius: 6, minHeight: 3,
-  },
-  barFillToday: { backgroundColor: Colors.primary, opacity: 1 },
-  barLabel: { color: Colors.textMuted, fontSize: 10, marginTop: 5 },
-  barLabelToday: { color: Colors.primary, fontWeight: '700' },
-
-  logoutWrapper: {
-    position: 'absolute', bottom: 0, left: 0, right: 0,
-    padding: 20, backgroundColor: Colors.background,
-    borderTopWidth: 1, borderColor: Colors.border,
-  },
-  logoutBtn: {
-    flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
-    backgroundColor: Colors.card, borderRadius: 14,
-    paddingVertical: 14, borderWidth: 1, borderColor: Colors.danger,
-  },
-  logoutText: { color: Colors.danger, fontWeight: '700', fontSize: 16 },
 })

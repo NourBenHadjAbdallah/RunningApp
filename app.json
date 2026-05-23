@@ -11,13 +11,13 @@
     "ios": {
       "supportsTablet": true,
       "config": {
-        "googleMapsApiKey": "YOUR_IOS_API_KEY"
+        "googleMapsApiKey": "$GOOGLE_MAPS_API_KEY_IOS"
       }
     },
     "android": {
       "config": {
         "googleMaps": {
-          "apiKey": "AIzaSyCkq7pj2JDp36E0SScCYk6HhfW5OvB_wkc"
+          "apiKey": "$GOOGLE_MAPS_API_KEY_ANDROID"
         }
       },
       "adaptiveIcon": {
