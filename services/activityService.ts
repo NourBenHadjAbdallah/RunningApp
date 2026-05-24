@@ -1,7 +1,4 @@
-// services/activityService.ts
-
 import { supabase } from './supabase'
-import { saveWithFallback, flushQueue } from '../utils/offlineQueue'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -17,21 +14,10 @@ export interface Activity {
   created_at: string
   user_id: string
   group_id?: string | null
-  profiles?: { username: string; full_name?: string | null; avatar_url?: string | null }
+  profiles?: { username: string; avatar_url?: string | null }
   groups?: { name: string } | null
   kudos_count?: number
   comment_count?: number
-
-  // ── Analytics fields (optional — populated from Supabase when available) ──
-  steps?: number
-  elevation_gain?: number
-  max_elevation?: number
-  elevation_data?: { distance_km: number; elevation_m: number }[]
-  moving_time?: number
-  fastest_split?: number
-  pace_data?: { distance_km: number; pace_sec_per_km: number }[]
-  splits?: { km: number; pace_sec_per_km: number; elevation_m?: number }[]
-  pace_zones?: { zone: number; percentage: number; pace_range?: string }[]
 }
 
 export interface Group {
@@ -94,66 +80,11 @@ export interface TrainingProgram {
   enrolled?: boolean
 }
 
-// ─── Internal save (used by queue flush + direct saves) ───────────────────────
-
-async function _insertActivity(data: {
-  title: string
-  distance: number
-  duration: number
-  pace: number
-  calories: number
-  route: { latitude: number; longitude: number }[]
-  group_id?: string | null
-  steps?: number
-  elevation_gain?: number
-  max_elevation?: number
-  elevation_data?: { distance_km: number; elevation_m: number }[]
-  moving_time?: number
-  fastest_split?: number
-  pace_data?: { distance_km: number; pace_sec_per_km: number }[]
-  splits?: { km: number; pace_sec_per_km: number; elevation_m?: number }[]
-  pace_zones?: { zone: number; percentage: number; pace_range?: string }[]
-}): Promise<void> {
-  const { data: { user }, error: authError } = await supabase.auth.getUser()
-  if (authError || !user?.id) throw new Error('You must be logged in to save an activity')
-
-  const { error } = await supabase.from('activities').insert({
-    user_id:    user.id,
-    title:      data.title.trim() || 'Morning Run',
-    distance:   parseFloat(data.distance.toFixed(3)),
-    duration:   data.duration,
-    pace:       parseFloat(data.pace.toFixed(2)),
-    calories:   Math.round(data.calories),
-    route:      data.route,
-    started_at: new Date().toISOString(),
-    group_id:   data.group_id ?? null,
-    ...(data.steps          != null && { steps:          data.steps }),
-    ...(data.elevation_gain != null && { elevation_gain: data.elevation_gain }),
-    ...(data.max_elevation  != null && { max_elevation:  data.max_elevation }),
-    ...(data.elevation_data != null && { elevation_data: data.elevation_data }),
-    ...(data.moving_time    != null && { moving_time:    data.moving_time }),
-    ...(data.fastest_split  != null && { fastest_split:  data.fastest_split }),
-    ...(data.pace_data      != null && { pace_data:      data.pace_data }),
-    ...(data.splits         != null && { splits:         data.splits }),
-    ...(data.pace_zones     != null && { pace_zones:     data.pace_zones }),
-  })
-  if (error) throw error
-
-  try {
-    await supabase.rpc('increment_stats', {
-      user_id: user.id,
-      added_distance: data.distance,
-    })
-  } catch (e) {
-    console.warn('Stats update failed:', e)
-  }
-}
-
 // ─── Service ──────────────────────────────────────────────────────────────────
 
 export const activityService = {
 
-  // ── Activities ──────────────────────────────────────────────────────────────
+  // ── Activities ─────────────────────────────────────────────────────────────
 
   async saveActivity(data: {
     title: string
@@ -163,24 +94,38 @@ export const activityService = {
     calories: number
     route: { latitude: number; longitude: number }[]
     group_id?: string | null
-    steps?: number
-    elevation_gain?: number
-    max_elevation?: number
-    elevation_data?: { distance_km: number; elevation_m: number }[]
-    moving_time?: number
-    fastest_split?: number
-    pace_data?: { distance_km: number; pace_sec_per_km: number }[]
-    splits?: { km: number; pace_sec_per_km: number; elevation_m?: number }[]
-    pace_zones?: { zone: number; percentage: number; pace_range?: string }[]
-  }): Promise<'saved' | 'queued'> {
-    return saveWithFallback(data, _insertActivity)
-  },
+  }) {
+    const { data: { user }, error: authError } = await supabase.auth.getUser()
+    if (authError || !user?.id) throw new Error('You must be logged in to save an activity')
 
-  async syncOfflineRuns(): Promise<{ saved: number; failed: number }> {
-    return flushQueue(_insertActivity)
-  },
+    // Validate inputs server-side before insert
+    const title = data.title.trim().slice(0, 100) || 'Morning Run'
+    const distance = Math.max(0, parseFloat(data.distance.toFixed(3)))
+    const duration = Math.max(0, Math.round(data.duration))
+    const pace = Math.max(0, parseFloat(data.pace.toFixed(2)))
+    const calories = Math.max(0, Math.round(data.calories))
+    const route = (data.route ?? []).slice(0, 10000) // cap at 10k points
 
-  // ── Feed ────────────────────────────────────────────────────────────────────
+    const { error } = await supabase.from('activities').insert({
+      user_id: user.id,
+      title,
+      distance,
+      duration,
+      pace,
+      calories,
+      route,
+      started_at: new Date().toISOString(),
+      group_id: data.group_id ?? null,
+    })
+    if (error) throw error
+
+    try {
+      // ✅ FIX: no longer passes user_id — the RPC uses auth.uid() internally
+      await supabase.rpc('increment_stats', { added_distance: distance })
+    } catch (e) {
+      console.warn('Stats update failed:', e)
+    }
+  },
 
   async getFriendsFeed(): Promise<Activity[]> {
     const { data: { user } } = await supabase.auth.getUser()
@@ -196,9 +141,7 @@ export const activityService = {
 
     const { data, error } = await supabase
       .from('activities')
-      // FIX: explicitly include `route` so the in-feed route preview has coordinates.
-      // The wildcard `*` may be excluded by Supabase when joined selects are present.
-      .select('*, route, kudos ( id ), comments ( id )')
+      .select(`*, kudos ( id ), comments ( id )`)
       .in('user_id', userIds)
       .order('created_at', { ascending: false })
       .limit(30)
@@ -208,24 +151,62 @@ export const activityService = {
     const uniqueUserIds = [...new Set((data ?? []).map((a: any) => a.user_id))]
     const { data: profilesData } = await supabase
       .from('profiles')
-      // FIX: include full_name so ActivityCard can prefer it over username
-      .select('id, username, full_name, avatar_url')
+      .select('id, username, avatar_url')
       .in('id', uniqueUserIds)
 
     const profilesMap = Object.fromEntries((profilesData ?? []).map((p: any) => [p.id, p]))
 
     return (data ?? []).map((a: any) => ({
       ...a,
-      profiles:      profilesMap[a.user_id] ?? null,
-      kudos_count:   a.kudos?.length ?? 0,
+      profiles: profilesMap[a.user_id] ?? null,
+      kudos_count: a.kudos?.length ?? 0,
       comment_count: a.comments?.length ?? 0,
     }))
   },
 
+  // Activities from groups the current user has joined
+async getGroupFeed(): Promise<Activity[]> {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user?.id) return []
+
+  // Get IDs of groups the user belongs to
+  const { data: memberData } = await supabase
+    .from('group_members')
+    .select('group_id')
+    .eq('user_id', user.id)
+
+  const groupIds = (memberData ?? []).map((m: any) => m.group_id)
+  if (groupIds.length === 0) return []
+
+  const { data, error } = await supabase
+    .from('activities')
+    .select(`*, kudos ( id ), comments ( id )`)
+    .in('group_id', groupIds)
+    .order('created_at', { ascending: false })
+    .limit(30)
+
+  if (error) throw error
+
+  const uniqueUserIds = [...new Set((data ?? []).map((a: any) => a.user_id))]
+  const { data: profilesData } = await supabase
+    .from('profiles')
+    .select('id, username, avatar_url')
+    .in('id', uniqueUserIds)
+
+  const profilesMap = Object.fromEntries((profilesData ?? []).map((p: any) => [p.id, p]))
+
+  return (data ?? []).map((a: any) => ({
+    ...a,
+    profiles: profilesMap[a.user_id] ?? null,
+    kudos_count: a.kudos?.length ?? 0,
+    comment_count: a.comments?.length ?? 0,
+  }))
+},
+
   async getFeed(): Promise<Activity[]> {
     const { data, error } = await supabase
       .from('activities')
-      .select('*, route, kudos ( id ), comments ( id )')
+      .select(`*, kudos ( id ), comments ( id )`)
       .order('created_at', { ascending: false })
       .limit(20)
 
@@ -241,8 +222,8 @@ export const activityService = {
 
     return (data ?? []).map((a: any) => ({
       ...a,
-      profiles:      profilesMap[a.user_id] ?? null,
-      kudos_count:   a.kudos?.length ?? 0,
+      profiles: profilesMap[a.user_id] ?? null,
+      kudos_count: a.kudos?.length ?? 0,
       comment_count: a.comments?.length ?? 0,
     }))
   },
@@ -258,42 +239,7 @@ export const activityService = {
       .order('created_at', { ascending: false })
 
     if (error) throw error
-    if (!data?.length) return []
-
-    // Fetch the user's own profile so ActivityCard can display their name
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('id, username, full_name, avatar_url')
-      .eq('id', user.id)
-      .single()
-
-    return data.map((a: any) => ({
-      ...a,
-      profiles: profile ?? null,
-    }))
-  },
-
-  async getActivityById(id: string): Promise<Activity | null> {
-    const { data, error } = await supabase
-      .from('activities')
-      .select('*, kudos ( id ), comments ( id )')
-      .eq('id', id)
-      .single()
-
-    if (error || !data) return null
-
-    const { data: profile } = await supabase
-      .from('profiles')
-      .select('id, username, avatar_url')
-      .eq('id', data.user_id)
-      .single()
-
-    return {
-      ...data,
-      profiles:      profile ?? null,
-      kudos_count:   data.kudos?.length ?? 0,
-      comment_count: data.comments?.length ?? 0,
-    }
+    return data ?? []
   },
 
   async getMyProfile() {
@@ -310,7 +256,7 @@ export const activityService = {
     return data
   },
 
-  // ── Kudos ───────────────────────────────────────────────────────────────────
+  // ── Kudos ──────────────────────────────────────────────────────────────────
 
   async giveKudos(activityId: string): Promise<void> {
     const { data: { user } } = await supabase.auth.getUser()
@@ -340,7 +286,7 @@ export const activityService = {
     return new Set((data ?? []).map((k: any) => k.activity_id))
   },
 
-  // ── Groups ──────────────────────────────────────────────────────────────────
+  // ── Groups ─────────────────────────────────────────────────────────────────
 
   async getGroups(): Promise<Group[]> {
     const { data: { user } } = await supabase.auth.getUser()
@@ -362,49 +308,6 @@ export const activityService = {
     return (data ?? []).map((g: any) => ({ ...g, joined: joinedIds.has(g.id) }))
   },
 
-  // ── Group feed — all activities posted to groups the user has joined ────────
-
-  async getGroupFeed(): Promise<Activity[]> {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user?.id) return []
-
-    // 1. Which groups has the user joined?
-    const { data: memberData, error: memberError } = await supabase
-      .from('group_members')
-      .select('group_id')
-      .eq('user_id', user.id)
-
-    if (memberError) throw memberError
-    const groupIds = (memberData ?? []).map((m: any) => m.group_id as string)
-    if (groupIds.length === 0) return []
-
-    // 2. Fetch all activities that belong to those groups
-    const { data, error } = await supabase
-      .from('activities')
-      .select('*, route, kudos ( id ), comments ( id ), groups:groups!activities_group_id_fkey ( name )')
-      .in('group_id', groupIds)
-      .order('created_at', { ascending: false })
-      .limit(60)
-
-    if (error) throw error
-
-    // 3. Hydrate profiles
-    const uniqueUserIds = [...new Set((data ?? []).map((a: any) => a.user_id))]
-    const { data: profilesData } = await supabase
-      .from('profiles')
-      .select('id, username, full_name, avatar_url')
-      .in('id', uniqueUserIds)
-
-    const profilesMap = Object.fromEntries((profilesData ?? []).map((p: any) => [p.id, p]))
-
-    return (data ?? []).map((a: any) => ({
-      ...a,
-      profiles:      profilesMap[a.user_id] ?? null,
-      kudos_count:   a.kudos?.length ?? 0,
-      comment_count: a.comments?.length ?? 0,
-    }))
-  },
-
   async joinGroup(groupId: string): Promise<void> {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user?.id) return
@@ -420,14 +323,14 @@ export const activityService = {
       .eq('user_id', user.id)
   },
 
-  // ── Events ──────────────────────────────────────────────────────────────────
+  // ── Events ─────────────────────────────────────────────────────────────────
 
   async getEvents(): Promise<RunEvent[]> {
     const { data: { user } } = await supabase.auth.getUser()
 
     const { data, error } = await supabase
       .from('events')
-      .select('*, event_rsvps ( id, user_id )')
+      .select(`*, event_rsvps ( id, user_id )`)
       .gte('event_date', new Date().toISOString())
       .order('event_date', { ascending: true })
 
@@ -457,7 +360,7 @@ export const activityService = {
       .eq('user_id', user.id)
   },
 
-  // ── Challenges ──────────────────────────────────────────────────────────────
+  // ── Challenges ─────────────────────────────────────────────────────────────
 
   async getChallenges(): Promise<Challenge[]> {
     const { data: { user } } = await supabase.auth.getUser()
@@ -484,8 +387,8 @@ export const activityService = {
     const { data: { user } } = await supabase.auth.getUser()
     if (!user?.id) return
     await supabase.from('challenge_completions').insert({
-      challenge_id:  challengeId,
-      user_id:       user.id,
+      challenge_id: challengeId,
+      user_id: user.id,
       points_earned: points,
     })
   },
@@ -499,7 +402,7 @@ export const activityService = {
       .eq('user_id', user.id)
   },
 
-  // ── Training Programs ────────────────────────────────────────────────────────
+  // ── Training Programs ──────────────────────────────────────────────────────
 
   async getPrograms(): Promise<TrainingProgram[]> {
     const { data: { user } } = await supabase.auth.getUser()
@@ -528,8 +431,8 @@ export const activityService = {
     if (!user?.id) return
     await supabase.from('program_enrollments').upsert({
       program_id: programId,
-      user_id:    user.id,
-      active:     true,
+      user_id: user.id,
+      active: true,
       started_at: new Date().toISOString(),
     }, { onConflict: 'program_id,user_id' })
   },
@@ -543,7 +446,7 @@ export const activityService = {
       .eq('user_id', user.id)
   },
 
-  // ── Follows ──────────────────────────────────────────────────────────────────
+  // ── Follows ────────────────────────────────────────────────────────────────
 
   async followUser(targetUserId: string): Promise<void> {
     const { data: { user } } = await supabase.auth.getUser()
@@ -558,39 +461,5 @@ export const activityService = {
       .delete()
       .eq('follower_id', user.id)
       .eq('following_id', targetUserId)
-  },
-
-  // ── Saved Routes ─────────────────────────────────────────────────────────────
-
-  async saveRoute(name: string, waypoints: { latitude: number; longitude: number }[], distanceKm: number) {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) throw new Error('Not authenticated')
-
-    const { error } = await supabase.from('saved_routes').insert({
-      user_id:     user.id,
-      name,
-      waypoints,
-      distance_km: distanceKm,
-    })
-    if (error) throw error
-  },
-
-  async getSavedRoutes() {
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return []
-
-    const { data, error } = await supabase
-      .from('saved_routes')
-      .select('*')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-
-    if (error) throw error
-    return data ?? []
-  },
-
-  async deleteSavedRoute(id: string) {
-    const { error } = await supabase.from('saved_routes').delete().eq('id', id)
-    if (error) throw error
   },
 }

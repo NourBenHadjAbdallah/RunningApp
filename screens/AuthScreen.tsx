@@ -188,13 +188,14 @@ export default function AuthScreen() {
   }
 
   const resolveEmail = async (identifier: string): Promise<string | null> => {
-    const trimmed = identifier.trim()
-    if (trimmed.includes('@') && trimmed.includes('.')) return trimmed.toLowerCase()
+    if (identifier.includes('@')) return identifier.trim().toLowerCase()
+ 
     const { data, error } = await supabase.rpc('get_email_by_username', {
-      p_username: trimmed.toLowerCase(),
+      p_username: identifier.toLowerCase().trim(),
     })
-    if (error) { console.error('resolveEmail:', error.message); return null }
-    return typeof data === 'string' ? data : null
+ 
+    if (error || !data) return null
+    return data as string
   }
 
   // ── OAuth ──────────────────────────────────────────────────────────────────
