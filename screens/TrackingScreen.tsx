@@ -1,67 +1,3 @@
-// ─── PATCH for TrackingScreen.tsx ────────────────────────────────────────────
-//
-// Add these two lines after the existing imports block:
-//
-//   import { useLocalSearchParams } from 'expo-router'      // already imported via router
-//
-// (expo-router's `router` is already imported; `useLocalSearchParams` just needs
-//  to be added to the same import statement.)
-//
-// Then add this effect INSIDE the TrackingScreen component, right after the
-// useBattleZone() destructure block (around line 88):
-//
-//   // ── Auto-enable battle mode when navigated here from Explore ──────────────
-//   const { battleMode } = useLocalSearchParams<{ battleMode?: string }>()
-//   const battleModeInitialised = useRef(false)
-//   useEffect(() => {
-//     if (battleMode === '1' && !battleModeInitialised.current && !isBattleMode) {
-//       battleModeInitialised.current = true
-//       toggleBattleMode()
-//     }
-//   }, [battleMode, isBattleMode, toggleBattleMode])
-//
-// That's the entire change needed in TrackingScreen.tsx.
-// The snippet below shows the full diff in context.
-
-// ── BEFORE (around line 14) ────────────────────────────────────────────────────
-// import { router } from 'expo-router'
-//
-// ── AFTER ─────────────────────────────────────────────────────────────────────
-// import { router, useLocalSearchParams } from 'expo-router'
-
-// ── BEFORE (around line 88, after useBattleZone block) ────────────────────────
-//   } = useBattleZone({
-//     isTracking,
-//     currentLocation,
-//     userName: currentUserName,
-//   })
-//
-//   // ── Save-modal state ──────────────────────────────────────────────────────
-//
-// ── AFTER ─────────────────────────────────────────────────────────────────────
-//   } = useBattleZone({
-//     isTracking,
-//     currentLocation,
-//     userName: currentUserName,
-//   })
-//
-//   // ── Auto-enable battle mode when navigated here from Explore ──────────────
-//   const { battleMode } = useLocalSearchParams<{ battleMode?: string }>()
-//   const battleModeInitialised = useRef(false)
-//   useEffect(() => {
-//     if (battleMode === '1' && !battleModeInitialised.current && !isBattleMode) {
-//       battleModeInitialised.current = true
-//       toggleBattleMode()
-//     }
-//   }, [battleMode, isBattleMode, toggleBattleMode])
-//
-//   // ── Save-modal state ──────────────────────────────────────────────────────
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Full patched TrackingScreen.tsx below (only the relevant top section shown).
-// Copy from here down into your TrackingScreen.tsx, replacing the existing file.
-// ─────────────────────────────────────────────────────────────────────────────
-
 // screens/TrackingScreen.tsx
 
 import React, { useRef, useState, useEffect, useCallback } from 'react'
@@ -69,13 +5,14 @@ import {
   View, Text, TouchableOpacity, StyleSheet,
   TextInput, Modal, Alert, ActivityIndicator,
   ScrollView, Dimensions, AppState, AppStateStatus,
-  FlatList,
+  FlatList, Platform,
 } from 'react-native'
 import MapView from 'react-native-maps'
 import { FontAwesome5 } from '@expo/vector-icons'
 import * as MediaLibrary from 'expo-media-library'
 import * as Sharing from 'expo-sharing'
-import { router, useLocalSearchParams } from 'expo-router'   // ← added useLocalSearchParams
+import { router, useLocalSearchParams } from 'expo-router'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import { useGPSTracking } from '../hooks/useGPSTracking'
 import { useBattleZone } from '../hooks/useBattleZone'
@@ -92,7 +29,10 @@ import type { SavedRoute, RunSnapshot } from '../components/Tracking/tracking'
 
 const { width: SCREEN_W } = Dimensions.get('window')
 
+// ─── No tab bar on this screen — stats panel sits flush at the bottom ─────────
+
 export default function TrackingScreen() {
+  const insets       = useSafeAreaInsets()
   const mapRef       = useRef<MapView>(null)
   const shareCardRef = useRef<RunShareCardHandle>(null)
   const latestIdRef  = useRef<string | null>(null)
@@ -307,9 +247,14 @@ export default function TrackingScreen() {
     if (latestIdRef.current) router.push({ pathname: '/(tabs)/activity', params: { id: latestIdRef.current } })
   }
 
+  // ── How tall the stats panel is (so map FABs sit above it) ─────────────────
+  // StatsPanel content height + device safe area bottom
+  const statsPanelHeight = 180 + insets.bottom
+
   return (
     <View style={styles.container}>
 
+      {/* ── MAP fills the entire screen ── */}
       <TrackingMap
         mapRef={mapRef}
         isTracking={isTracking}
@@ -330,6 +275,18 @@ export default function TrackingScreen() {
         currentUserId={currentUserId}
       />
 
+      {/* ── Back button — top-left, only when NOT actively tracking ── */}
+      {!isTracking && (
+        <TouchableOpacity
+          style={[styles.backBtn, { top: insets.top + 12 }]}
+          onPress={() => router.back()}
+          activeOpacity={0.8}
+        >
+          <FontAwesome5 name="chevron-left" size={14} color="#fff" />
+        </TouchableOpacity>
+      )}
+
+      {/* ── Battle Zone HUD (sits below status bar, above stats panel) ── */}
       {isBattleMode && (
         <BattleZoneHUD
           myZoneCount={myZoneCount}
@@ -338,22 +295,25 @@ export default function TrackingScreen() {
         />
       )}
 
-      <StatsPanel
-        isTracking={isTracking}
-        isPaused={isPaused}
-        distance={distance}
-        duration={duration}
-        pace={pace}
-        onStart={startTracking}
-        onPause={pauseTracking}
-        onResume={resumeTracking}
-        onStop={handleStop}
-      />
+      {/* ── Stats panel — flush at the bottom ── */}
+      <View style={[styles.statsPanelWrapper, { bottom: 0 }]}>
+        <StatsPanel
+          isTracking={isTracking}
+          isPaused={isPaused}
+          distance={distance}
+          duration={duration}
+          pace={pace}
+          onStart={startTracking}
+          onPause={pauseTracking}
+          onResume={resumeTracking}
+          onStop={handleStop}
+        />
+      </View>
 
       {/* ── SAVED ROUTES MODAL ─────────────────────────────────────────────── */}
       <Modal visible={routeModal} transparent animationType="slide" onRequestClose={() => setRouteModal(false)}>
         <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
+          <View style={[styles.modalBox, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalTitle}>Saved Routes</Text>
               <TouchableOpacity onPress={() => setRouteModal(false)} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -396,7 +356,7 @@ export default function TrackingScreen() {
       {/* ── SAVE MODAL ─────────────────────────────────────────────────────── */}
       <Modal visible={saveModal} transparent animationType="slide">
         <View style={styles.modalOverlay}>
-          <View style={styles.modalBox}>
+          <View style={[styles.modalBox, { paddingBottom: Math.max(insets.bottom, 16) }]}>
             <Text style={styles.modalTitle}>Save your activity</Text>
             <TextInput
               style={styles.modalInput}
@@ -419,7 +379,13 @@ export default function TrackingScreen() {
       {/* ── SHARE MODAL ────────────────────────────────────────────────────── */}
       <Modal visible={shareModal} transparent animationType="fade">
         <View style={styles.shareOverlay}>
-          <ScrollView contentContainerStyle={styles.shareScroll} showsVerticalScrollIndicator={false}>
+          <ScrollView
+            contentContainerStyle={[
+              styles.shareScroll,
+              { paddingBottom: Math.max(insets.bottom, 24) + 24 },
+            ]}
+            showsVerticalScrollIndicator={false}
+          >
             <Text style={styles.shareHeading}>Activity Card 🏃</Text>
             <Text style={styles.shareSubheading}>Save or share your achievement</Text>
 
@@ -472,38 +438,88 @@ export default function TrackingScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: Colors.background },
 
+  // ── Back button (top-left, visible when not tracking) ─────────────────────
+  backBtn: {
+    position: 'absolute',
+    left: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(0,0,0,0.82)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.12)',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.4,
+    shadowRadius: 4,
+    elevation: 5,
+  },
+
+  // ── Stats panel sits above the floating tab bar ────────────────────────────
+  statsPanelWrapper: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    // `bottom` is set inline using TAB_BAR_CLEARANCE
+    // This ensures the panel never overlaps the tab bar pill
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 12,
+    elevation: 16,
+  },
+
+  // ── Modals ─────────────────────────────────────────────────────────────────
   modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'flex-end' },
-  modalBox: { backgroundColor: Colors.card, padding: 24, borderTopLeftRadius: 25, borderTopRightRadius: 25 },
+  modalBox: {
+    backgroundColor: Colors.card,
+    padding: 24,
+    borderTopLeftRadius: 25,
+    borderTopRightRadius: 25,
+  },
   modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   modalTitle: { color: Colors.text, fontSize: 20, fontWeight: 'bold' },
   loader: { marginVertical: 32 },
 
   modalInput: { backgroundColor: Colors.card2, color: Colors.text, padding: 15, borderRadius: 10, marginTop: 16, marginBottom: 20 },
   saveBtn:    { backgroundColor: Colors.primary, padding: 18, borderRadius: 10, alignItems: 'center', marginBottom: 12 },
-  btnText:     { color: '#fff', fontWeight: 'bold', fontSize: 16 },
-  discardText: { color: Colors.textMuted, textAlign: 'center', paddingVertical: 4 },
+  btnText:    { color: '#fff', fontWeight: 'bold', fontSize: 16 },
+  discardText:{ color: Colors.textMuted, textAlign: 'center', paddingVertical: 4 },
 
   routeList: { maxHeight: 320 },
   routeSep:  { height: 1, backgroundColor: 'rgba(255,255,255,0.06)' },
   routeRow:  { flexDirection: 'row', alignItems: 'center', paddingVertical: 14, gap: 12 },
   routeIconWrap: { width: 36, height: 36, borderRadius: 10, backgroundColor: 'rgba(108,99,255,0.15)', justifyContent: 'center', alignItems: 'center' },
-  routeInfo:  { flex: 1 },
-  routeName:  { color: Colors.text, fontSize: 15, fontWeight: '600' },
-  routeMeta:  { color: Colors.textMuted, fontSize: 12, marginTop: 2 },
+  routeInfo: { flex: 1 },
+  routeName: { color: Colors.text, fontSize: 15, fontWeight: '600' },
+  routeMeta: { color: Colors.textMuted, fontSize: 12, marginTop: 2 },
   emptyRoutes: { alignItems: 'center', paddingVertical: 36, gap: 8 },
   emptyTitle:  { color: Colors.text, fontSize: 16, fontWeight: '600' },
   emptySub:    { color: Colors.textMuted, fontSize: 13, textAlign: 'center', lineHeight: 18, paddingHorizontal: 12 },
 
-  shareOverlay:    { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)' },
-  shareScroll:     { flexGrow: 1, alignItems: 'center', paddingTop: 60, paddingBottom: 48, paddingHorizontal: 20 },
-  shareHeading:    { color: '#fff', fontSize: 24, fontWeight: '800', letterSpacing: -0.5, marginBottom: 4 },
-  shareSubheading: { color: 'rgba(255,255,255,0.5)', fontSize: 14, marginBottom: 28 },
-  shareCardWrapper: { width: SCREEN_W - 40, aspectRatio: 360 / 540, borderRadius: 24, overflow: 'hidden', shadowColor: Colors.primary, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.4, shadowRadius: 20, elevation: 12 },
-  shareActions:    { flexDirection: 'row', gap: 12, marginTop: 28, width: '100%' },
-  actionBtn:       { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: Colors.primary, paddingVertical: 16, borderRadius: 14 },
-  actionBtnOutline:{ backgroundColor: 'transparent', borderWidth: 1.5, borderColor: Colors.primary },
-  actionBtnText:   { color: '#fff', fontWeight: '700', fontSize: 15 },
-  shareSecondary:  { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginTop: 20, paddingHorizontal: 4 },
-  secondaryLink:   { color: Colors.primary, fontSize: 14, fontWeight: '600' },
-  secondaryClose:  { color: 'rgba(255,255,255,0.4)', fontSize: 14 },
+  // ── Share modal ────────────────────────────────────────────────────────────
+  shareOverlay:     { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)' },
+  shareScroll:      { flexGrow: 1, alignItems: 'center', paddingTop: 60, paddingHorizontal: 20 },
+  shareHeading:     { color: '#fff', fontSize: 24, fontWeight: '800', letterSpacing: -0.5, marginBottom: 4 },
+  shareSubheading:  { color: 'rgba(255,255,255,0.5)', fontSize: 14, marginBottom: 28 },
+  shareCardWrapper: {
+    width: SCREEN_W - 40,
+    aspectRatio: 360 / 540,
+    borderRadius: 24,
+    overflow: 'hidden',
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.4,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  shareActions:     { flexDirection: 'row', gap: 12, marginTop: 28, width: '100%' },
+  actionBtn:        { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10, backgroundColor: Colors.primary, paddingVertical: 16, borderRadius: 14 },
+  actionBtnOutline: { backgroundColor: 'transparent', borderWidth: 1.5, borderColor: Colors.primary },
+  actionBtnText:    { color: '#fff', fontWeight: '700', fontSize: 15 },
+  shareSecondary:   { flexDirection: 'row', justifyContent: 'space-between', width: '100%', marginTop: 20, paddingHorizontal: 4 },
+  secondaryLink:    { color: Colors.primary, fontSize: 14, fontWeight: '600' },
+  secondaryClose:   { color: 'rgba(255,255,255,0.4)', fontSize: 14 },
 })

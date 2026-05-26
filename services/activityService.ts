@@ -462,4 +462,39 @@ async getGroupFeed(): Promise<Activity[]> {
       .eq('follower_id', user.id)
       .eq('following_id', targetUserId)
   },
+
+    // ── Saved Routes ─────────────────────────────────────────────────────────────
+
+  async saveRoute(name: string, waypoints: { latitude: number; longitude: number }[], distanceKm: number) {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) throw new Error('Not authenticated')
+
+    const { error } = await supabase.from('saved_routes').insert({
+      user_id:     user.id,
+      name,
+      waypoints,
+      distance_km: distanceKm,
+    })
+    if (error) throw error
+  },
+
+  async getSavedRoutes() {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return []
+
+    const { data, error } = await supabase
+      .from('saved_routes')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+
+    if (error) throw error
+    return data ?? []
+  },
+
+  async deleteSavedRoute(id: string) {
+    const { error } = await supabase.from('saved_routes').delete().eq('id', id)
+    if (error) throw error
+  },
+
 }

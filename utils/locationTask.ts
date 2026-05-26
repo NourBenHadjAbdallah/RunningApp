@@ -59,7 +59,7 @@ export const bgState = {
 const NOTIFICATION_ID = 'axionrun-live-run'
 
 async function updateNotification(distance: number, duration: number): Promise<void> {
-  const pace = duration > 0 && distance > 0 ? duration / 60 / distance : 0
+  const pace = distance >= 0.1 ? duration / 60 / distance : 0
   const body = `${distance.toFixed(2)} km  ·  ${formatTime(duration)}  ·  ${formatPace(pace)}`
   await Notifications.scheduleNotificationAsync({
     identifier: NOTIFICATION_ID,

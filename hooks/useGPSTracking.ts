@@ -475,7 +475,10 @@ export function useGPSTracking() {
     }
   }, [])
 
-  const pace     = duration > 0 && distance > 0 ? duration / 60 / distance : 0
+  // Pace in min/km — matches what formatPace() expects (e.g. 5.5 → "5'30").
+  // Guard at 0.01 km (10 m) — just enough to avoid division by near-zero on
+  // the very first GPS fix, without making the user wait to see their pace.
+  const pace     = distance >= 0.01 ? duration / 60 / distance : 0
   const calories = calculateCalories(distance)
   const steps    = estimateSteps(distance)
 

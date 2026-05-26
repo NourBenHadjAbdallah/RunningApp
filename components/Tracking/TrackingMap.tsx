@@ -1,10 +1,10 @@
 // components/tracking/TrackingMap.tsx
-// Updated to include Battle Zone mode toggle FAB and BattleZoneLayer overlay.
 
 import { FontAwesome5 } from '@expo/vector-icons'
 import React, { memo, useState, useRef } from 'react'
 import { StyleSheet, Text, TouchableOpacity, View, Animated, Pressable } from 'react-native'
 import MapView, { Polyline, PROVIDER_GOOGLE } from 'react-native-maps'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 import { Colors } from '../../constants/colors'
 import { DARK_MAP_STYLE, DEFAULT_REGION } from '../../constants/mapStyle'
 import type { Coordinate } from './tracking'
@@ -23,6 +23,10 @@ const TYPE_OPTIONS: { type: ActivityType; icon: string; label: string; color: st
 const BATTLE_RED  = '#ef4444'
 const BATTLE_GOLD = '#f59e0b'
 
+// Stats panel height — FABs sit just above it. No tab bar to clear.
+const STATS_PANEL_H = 180
+const FAB_BOTTOM    = STATS_PANEL_H + 8
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface TrackingMapProps {
@@ -39,8 +43,6 @@ interface TrackingMapProps {
   onLocateMe: () => void
   onOpenRoutes: () => void
   onClearGhost: () => void
-
-  // ── Battle Zone props ────────────────────────────────────────────────────
   isBattleMode: boolean
   onToggleBattleMode: () => void
   battleZones: BattleZone[]
@@ -56,15 +58,15 @@ function TrackingMap({
   onLocateMe, onOpenRoutes, onClearGhost,
   isBattleMode, onToggleBattleMode, battleZones, currentUserId,
 }: TrackingMapProps) {
+  const insets = useSafeAreaInsets()
   const [pickerOpen, setPickerOpen] = useState(false)
   const fadeAnim  = useRef(new Animated.Value(0)).current
   const scaleAnim = useRef(new Animated.Value(0.85)).current
 
-  // Battle button pulse animation
+  // Battle button pulse
   const battlePulse = useRef(new Animated.Value(1)).current
   const pulseLoop   = useRef<Animated.CompositeAnimation | null>(null)
 
-  // Start / stop pulse when battle mode changes
   React.useEffect(() => {
     if (isBattleMode) {
       pulseLoop.current = Animated.loop(
@@ -113,17 +115,17 @@ function TrackingMap({
 
   return (
     <>
+      {/* ── Map fills the entire screen ── */}
       <MapView
         ref={mapRef}
         provider={PROVIDER_GOOGLE}
-        style={styles.map}
+        style={StyleSheet.absoluteFillObject}
         customMapStyle={DARK_MAP_STYLE}
         showsUserLocation
         followsUserLocation={isTracking && !isPaused}
         region={mapRegion}
         initialRegion={DEFAULT_REGION}
       >
-        {/* ── Battle Zone hex territory layer ── */}
         {isBattleMode && (
           <BattleZoneLayer zones={battleZones} currentUserId={currentUserId} />
         )}
@@ -141,25 +143,28 @@ function TrackingMap({
         )}
       </MapView>
 
-      {/* Tracking status badge */}
+      {/* ── Tracking status badge — below status bar ── */}
       {isTracking && (
-        <View style={styles.badge}>
+        <View style={[styles.badge, { top: insets.top + 12 }]}>
           <View style={[styles.badgeDot, isPaused && styles.badgeDotPaused]} />
           <Text style={styles.badgeText}>{isPaused ? 'PAUSED' : 'TRACKING'}</Text>
         </View>
       )}
 
-      {/* Offline banner */}
+      {/* ── Offline banner ── */}
       {!isOnline && (
-        <View style={styles.offlineBanner}>
+        <View style={[styles.offlineBanner, { top: insets.top + (isTracking ? 58 : 12) }]}>
           <FontAwesome5 name="wifi" size={11} color="#fff" />
           <Text style={styles.offlineBannerText}>No connection — run will save offline</Text>
         </View>
       )}
 
-      {/* Ghost route label */}
+      {/* ── Ghost route label ── */}
       {ghostLabel && (
-        <View style={[styles.ghostBanner, !isOnline && styles.bannerBelowOffline]}>
+        <View style={[
+          styles.ghostBanner,
+          { top: insets.top + (isTracking ? (!isOnline ? 104 : 58) : (!isOnline ? 58 : 12)) },
+        ]}>
           <FontAwesome5 name="route" size={11} color={Colors.primary} />
           <Text style={styles.ghostText} numberOfLines={1}>{ghostLabel}</Text>
           <TouchableOpacity onPress={onClearGhost} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
@@ -168,8 +173,8 @@ function TrackingMap({
         </View>
       )}
 
-      {/* ── FABs ── */}
-      <View style={styles.fabs}>
+      {/* ── FABs — positioned above StatsPanel + tab bar ── */}
+      <View style={[styles.fabs, { bottom: FAB_BOTTOM }]}>
         {/* Locate me */}
         <TouchableOpacity style={styles.fab} onPress={onLocateMe} activeOpacity={0.8}>
           <FontAwesome5 name="location-arrow" size={16} color={Colors.primary} />
@@ -189,7 +194,7 @@ function TrackingMap({
           <FontAwesome5 name={activeCfg.icon} size={16} color={activeCfg.color} />
         </TouchableOpacity>
 
-        {/* ── Battle Zone toggle FAB ── */}
+        {/* Battle Zone toggle */}
         <Animated.View style={{ transform: [{ scale: battlePulse }] }}>
           <TouchableOpacity
             style={[
@@ -200,32 +205,30 @@ function TrackingMap({
             onPress={onToggleBattleMode}
             activeOpacity={0.8}
           >
-            {isBattleMode ? (
-              // Active state: crossed swords emoji with glowing border
-              <Text style={styles.battleEmoji}>⚔️</Text>
-            ) : (
-              <FontAwesome5 name="shield-alt" size={16} color={BATTLE_RED} />
-            )}
+            {isBattleMode
+              ? <Text style={styles.battleEmoji}>⚔️</Text>
+              : <FontAwesome5 name="shield-alt" size={16} color={BATTLE_RED} />
+            }
           </TouchableOpacity>
         </Animated.View>
       </View>
 
-      {/* Battle mode active label near FAB */}
+      {/* ── Battle mode active label — left of FABs ── */}
       {isBattleMode && (
-        <View style={styles.battleLabel}>
+        <View style={[styles.battleLabel, { bottom: FAB_BOTTOM }]}>
           <View style={styles.battleLabelDot} />
           <Text style={styles.battleLabelText}>BATTLE ZONE</Text>
         </View>
       )}
 
-      {/* ── Type picker popover ── */}
+      {/* ── Activity type picker popover ── */}
       {pickerOpen && (
         <>
           <Pressable style={StyleSheet.absoluteFill} onPress={closePicker} />
           <Animated.View
             style={[
               styles.popover,
-              { opacity: fadeAnim, transform: [{ scale: scaleAnim }] },
+              { bottom: FAB_BOTTOM + 10, opacity: fadeAnim, transform: [{ scale: scaleAnim }] },
             ]}
           >
             <View style={styles.track}>
@@ -273,12 +276,14 @@ TrackingMap.displayName = 'TrackingMap'
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  map: { flex: 1 },
-
   badge: {
-    position: 'absolute', top: 50, alignSelf: 'center',
-    flexDirection: 'row', alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.8)', padding: 10, borderRadius: 20,
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(0,0,0,0.8)',
+    padding: 10,
+    borderRadius: 20,
   },
   badgeDot: {
     width: 8, height: 8, borderRadius: 4,
@@ -288,25 +293,38 @@ const styles = StyleSheet.create({
   badgeText: { color: '#fff', fontWeight: 'bold' },
 
   offlineBanner: {
-    position: 'absolute', top: 90, alignSelf: 'center',
-    flexDirection: 'row', alignItems: 'center', gap: 6,
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: 'rgba(239,68,68,0.9)',
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
   },
   offlineBannerText: { color: '#fff', fontSize: 12, fontWeight: '600' },
 
   ghostBanner: {
-    position: 'absolute', top: 90, alignSelf: 'center',
-    flexDirection: 'row', alignItems: 'center', gap: 6,
+    position: 'absolute',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
     backgroundColor: 'rgba(0,0,0,0.75)',
-    paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, maxWidth: 300,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 20,
+    maxWidth: 300,
   },
-  bannerBelowOffline: { top: 132 },
   ghostText: { color: '#fff', fontSize: 12, fontWeight: '600', flex: 1 },
 
+  // ── FABs ──────────────────────────────────────────────────────────────────
   fabs: {
-    position: 'absolute', right: 14, bottom: 220,
-    gap: 10, alignItems: 'center',
+    position: 'absolute',
+    right: 14,
+    gap: 10,
+    alignItems: 'center',
   },
   fab: {
     width: 44, height: 44, borderRadius: 22,
@@ -316,8 +334,6 @@ const styles = StyleSheet.create({
     shadowColor: '#000', shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.4, shadowRadius: 4, elevation: 5,
   },
-
-  // Battle FAB variants
   battleFab: {
     borderColor: `${BATTLE_RED}66`,
     backgroundColor: 'rgba(0,0,0,0.85)',
@@ -332,11 +348,10 @@ const styles = StyleSheet.create({
   },
   battleEmoji: { fontSize: 18 },
 
-  // Battle active label (appears to the left of the FAB column)
+  // ── Battle label ──────────────────────────────────────────────────────────
   battleLabel: {
     position: 'absolute',
     right: 66,
-    bottom: 220,
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
@@ -358,11 +373,10 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
   },
 
-  // ── Popover ──────────────────────────────────────────────────────────────
+  // ── Activity type popover ─────────────────────────────────────────────────
   popover: {
     position: 'absolute',
     right: 66,
-    bottom: 290, // above the battle FAB now that we have 4 FABs
     backgroundColor: 'rgba(10,10,15,0.96)',
     borderRadius: 20,
     borderWidth: 1,

@@ -11,12 +11,21 @@ import {
   Animated,
 } from 'react-native'
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs'
+import { useSafeAreaInsets } from 'react-native-safe-area-context'
 
+// ─── Export this so any screen can pad its content correctly ──────────────────
+// Usage: import { TAB_BAR_HEIGHT } from './_layout'
+// Then add paddingBottom: TAB_BAR_HEIGHT to your scrollable content
+
+export const BAR_HEIGHT    = 62
+export const H_MARGIN      = 16
+export const CORNER        = 28
+const        RUN_BTN_H     = 56
+const        RUN_BTN_W     = 56
 
 // ─── Regular Tab ───────────────────────────────────────────────────────────────
 
 function RegularTab({
-  route,
   isFocused,
   onPress,
   iconName,
@@ -117,6 +126,15 @@ function RunTab({
 // ─── Custom Tab Bar ────────────────────────────────────────────────────────────
 
 function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
+  const insets = useSafeAreaInsets()
+
+  // Hide the tab bar entirely on the tracking screen
+  const activeRoute = state.routes[state.index]
+  if (activeRoute?.name === 'track') return null
+
+  // How much space below the pill (safe area + breathing room)
+  const bottomPad = Math.max(insets.bottom, 8) + 8
+
   const VISIBLE = ['index', 'explore', 'track', 'route-planner', 'profile']
 
   const visibleRoutes = state.routes
@@ -139,10 +157,18 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   }
 
   return (
-    <View style={styles.floatingWrapper}>
+    // ── Outer wrapper — transparent, floats above content ──────────────────
+    <View
+      style={[styles.floatingWrapper, { paddingBottom: bottomPad }]}
+      pointerEvents="box-none"
+    >
+      {/* ── Pill container ── */}
       <View style={styles.floatingContainer}>
-        <View style={[StyleSheet.absoluteFillObject, { backgroundColor: Colors.card }]} />
+        {/* Frosted-glass dark fill */}
+        <View style={[StyleSheet.absoluteFillObject, styles.pillBg]} />
+        {/* Top highlight line */}
         <View style={styles.topHighlight} />
+        {/* Inner sheen */}
         <View style={styles.innerSheen} />
 
         <View style={styles.bar}>
@@ -208,39 +234,47 @@ export default function TabsLayout() {
 
 // ─── Styles ────────────────────────────────────────────────────────────────────
 
-const BAR_HEIGHT = 62
-const RUN_BTN_H  = 56
-const RUN_BTN_W  = 56
-const CORNER     = 28
-const H_MARGIN   = 20
-const BOTTOM_PAD = Platform.OS === 'ios' ? 28 : 14
-
-
 const styles = StyleSheet.create({
+  // ── Outer wrapper — sits on top of screen content, transparent bg ──────────
   floatingWrapper: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
     paddingHorizontal: H_MARGIN,
-    paddingBottom: BOTTOM_PAD,
-    backgroundColor: Colors.background,
+    // NO backgroundColor here — fully transparent so content shows through
+    backgroundColor: 'transparent',
+    // Allow touches to pass through the transparent area around the pill
+    pointerEvents: 'box-none',
   },
+
+  // ── The pill itself ────────────────────────────────────────────────────────
   floatingContainer: {
     borderRadius: CORNER,
     overflow: 'hidden',
+    // Subtle shadow so the pill lifts off the content below
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.45,
-    shadowRadius: 24,
-    elevation: 18,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.55,
+    shadowRadius: 20,
+    elevation: 20,
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.10)',
-    backgroundColor: 'transparent',
   },
+
+  // Semi-transparent dark background — content is visible through it
+  pillBg: {
+    backgroundColor: 'rgba(15,15,15,0.82)',
+    borderRadius: CORNER,
+  },
+
   topHighlight: {
     position: 'absolute',
     top: 0,
     left: 24,
     right: 24,
     height: 1,
-    backgroundColor: 'rgba(255,255,255,0.18)',
+    backgroundColor: 'rgba(255,255,255,0.14)',
     zIndex: 2,
   },
   innerSheen: {
@@ -259,7 +293,7 @@ const styles = StyleSheet.create({
     zIndex: 3,
   },
 
-  // Regular tab
+  // ── Regular tab ────────────────────────────────────────────────────────────
   tab: {
     flex: 1,
     alignItems: 'center',
@@ -296,7 +330,7 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
   },
 
-  // Run button
+  // ── Run button ─────────────────────────────────────────────────────────────
   runSlot: {
     flex: 1,
     alignItems: 'center',

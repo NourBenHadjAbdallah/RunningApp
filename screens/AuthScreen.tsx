@@ -1,9 +1,6 @@
 // screens/AuthScreen.tsx
-// Secure auth with:
-//  - Google / Apple / Facebook OAuth (via Supabase)
-//  - Email + password (with strength meter)
-//  - Username login via RPC
-//  - Full sign-up form (name, username, DOB, sex, phone)
+// Email + password login (also accepts username in the login field)
+// Full sign-up form (name, username, email, password, DOB, sex, phone)
 
 import React, { useState } from 'react'
 import {
@@ -12,12 +9,8 @@ import {
   ScrollView,
 } from 'react-native'
 import { FontAwesome5, Ionicons } from '@expo/vector-icons'
-import * as WebBrowser from 'expo-web-browser'
-import { makeRedirectUri } from 'expo-auth-session'
 import { supabase } from '../services/supabase'
 import { Colors } from '../constants/colors'
-
-WebBrowser.maybeCompleteAuthSession()
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -95,60 +88,13 @@ const Field = ({ label, children }: { label: string; children: React.ReactNode }
   </View>
 )
 
-// ─── Helper: ensure a profiles row exists for an OAuth user ───────────────────
-//
-// The Supabase trigger (fix_oauth_profiles_trigger.sql) handles this
-// automatically for new signups. This function is a client-side safety net
-// for users who signed up before the trigger existed, or in case the trigger
-// races with the session being established.
-
-async function ensureOAuthProfile(userId: string, email: string | undefined, meta: any) {
-  // Check if a profile already exists
-  const { data: existing } = await supabase
-    .from('profiles')
-    .select('id')
-    .eq('id', userId)
-    .maybeSingle()
-
-  if (existing) return // already has a profile, nothing to do
-
-  // Build a username from whatever the provider gave us
-  const rawUsername =
-    meta?.user_name ??
-    meta?.preferred_username ??
-    (email ? email.split('@')[0] : 'user')
-
-  const baseUsername = rawUsername.toLowerCase().replace(/[^a-z0-9_]/g, '_')
-
-  // Check uniqueness and add suffix if needed
-  const { data: taken } = await supabase
-    .from('profiles')
-    .select('id')
-    .eq('username', baseUsername)
-    .maybeSingle()
-
-  const username = taken
-    ? `${baseUsername}_${Math.random().toString(36).slice(2, 6)}`
-    : baseUsername
-
-  await supabase.from('profiles').insert({
-    id: userId,
-    email: email ?? null,
-    username,
-    full_name: meta?.full_name ?? meta?.name ?? username,
-    total_distance: 0,
-    total_runs: 0,
-  })
-}
-
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export default function AuthScreen() {
-  const [isLogin, setIsLogin]           = useState(true)
-  const [loading, setLoading]           = useState(false)
-  const [oauthLoading, setOauthLoading] = useState<'google' | 'apple' | 'facebook' | null>(null)
-  const [showPass, setShowPass]         = useState(false)
-  const [showConfirm, setShowConfirm]   = useState(false)
+  const [isLogin, setIsLogin]     = useState(true)
+  const [loading, setLoading]     = useState(false)
+  const [showPass, setShowPass]   = useState(false)
+  const [showConfirm, setShowConfirm] = useState(false)
 
   // Login fields
   const [loginIdentifier, setLoginIdentifier] = useState('')
@@ -163,9 +109,9 @@ export default function AuthScreen() {
   const [dobDay,   setDobDay]   = useState('')
   const [dobMonth, setDobMonth] = useState('')
   const [dobYear,  setDobYear]  = useState('')
-  const [openPicker, setOpenPicker]     = useState<PickerField>(null)
-  const [phone, setPhone]               = useState('')
-  const [sex,   setSex]                 = useState('')
+  const [openPicker, setOpenPicker]       = useState<PickerField>(null)
+  const [phone, setPhone]                 = useState('')
+  const [sex,   setSex]                   = useState('')
   const [showSexPicker, setShowSexPicker] = useState(false)
 
   const strength       = getPasswordStrength(password)
@@ -187,74 +133,31 @@ export default function AuthScreen() {
     return `${dobYear}-${dobMonth}-${dobDay}`
   }
 
+  /**
+   * Resolve a login identifier to an email address.
+   * If the input looks like an email, use it directly.
+   * Otherwise treat it as a username and look up the email via RPC.
+   */
   const resolveEmail = async (identifier: string): Promise<string | null> => {
-    if (identifier.includes('@')) return identifier.trim().toLowerCase()
- 
+    const trimmed = identifier.trim()
+
+    // Looks like an email — use directly
+    if (trimmed.includes('@')) return trimmed.toLowerCase()
+
+    // Treat as username — call the Supabase RPC
     const { data, error } = await supabase.rpc('get_email_by_username', {
-      p_username: identifier.toLowerCase().trim(),
+      p_username: trimmed.toLowerCase(),
     })
- 
+
     if (error || !data) return null
     return data as string
   }
 
-  // ── OAuth ──────────────────────────────────────────────────────────────────
-
-  const handleOAuth = async (provider: 'google' | 'apple' | 'facebook') => {
-    setOauthLoading(provider)
-    try {
-      const redirectTo = makeRedirectUri({ scheme: 'runningapp', path: 'auth/callback' })
-
-      const { data, error } = await supabase.auth.signInWithOAuth({
-        provider,
-        options: {
-          redirectTo,
-          skipBrowserRedirect: true,
-        },
-      })
-
-      if (error) throw error
-      if (!data?.url) throw new Error('No OAuth URL returned')
-
-      const result = await WebBrowser.openAuthSessionAsync(data.url, redirectTo)
-
-      if (result.type === 'success' && result.url) {
-        const url = new URL(result.url)
-        const accessToken  = url.searchParams.get('access_token')
-          ?? new URLSearchParams(url.hash.slice(1)).get('access_token')
-        const refreshToken = url.searchParams.get('refresh_token')
-          ?? new URLSearchParams(url.hash.slice(1)).get('refresh_token')
-
-        if (accessToken && refreshToken) {
-          const { data: sessionData, error: sessionError } =
-            await supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken })
-
-          if (sessionError) throw sessionError
-
-          // FIX: After OAuth session is established, ensure the user has a
-          // profiles row. The DB trigger handles new signups automatically,
-          // but we also do it here as a client-side safety net for existing
-          // OAuth users who were created before the trigger was in place.
-          if (sessionData?.user) {
-            await ensureOAuthProfile(
-              sessionData.user.id,
-              sessionData.user.email,
-              sessionData.user.user_metadata,
-            )
-          }
-        }
-      }
-    } catch (e: any) {
-      Alert.alert('Login failed', e.message ?? 'Could not complete sign-in')
-    }
-    setOauthLoading(null)
-  }
-
-  // ── Email login ────────────────────────────────────────────────────────────
+  // ── Email / username login ─────────────────────────────────────────────────
 
   const handleLogin = async () => {
     if (!loginIdentifier.trim() || !loginPassword) {
-      return Alert.alert('Missing fields', 'Please enter your email/username and password.')
+      return Alert.alert('Missing fields', 'Please enter your email or username and password.')
     }
     setLoading(true)
     try {
@@ -265,7 +168,7 @@ export default function AuthScreen() {
         return
       }
       const { error } = await supabase.auth.signInWithPassword({
-        email: resolvedEmail,
+        email:    resolvedEmail,
         password: loginPassword,
       })
       if (error) Alert.alert('Login failed', error.message)
@@ -294,15 +197,15 @@ export default function AuthScreen() {
         Alert.alert('Sign-up failed', error.message)
       } else if (data.user) {
         const { error: profileError } = await supabase.from('profiles').insert({
-          id: data.user.id,
-          email: email.toLowerCase().trim(),
-          username: username.toLowerCase().replace(/\s/g, '_'),
-          full_name: fullName.trim(),
+          id:            data.user.id,
+          email:         email.toLowerCase().trim(),
+          username:      username.toLowerCase().replace(/\s/g, '_'),
+          full_name:     fullName.trim(),
           date_of_birth: buildDob(),
-          sex: sex || null,
-          phone: phone || null,
+          sex:           sex || null,
+          phone:         phone || null,
           total_distance: 0,
-          total_runs: 0,
+          total_runs:     0,
         })
         if (profileError) Alert.alert('Profile error', profileError.message)
       }
@@ -321,8 +224,8 @@ export default function AuthScreen() {
     openPicker === field ? (
       <ScrollView style={styles.dropdownScroll} nestedScrollEnabled showsVerticalScrollIndicator={false}>
         {items.map((item, idx) => {
-          const val = valueKey ? item[valueKey] : item
-          const lbl = labelKey ? item[labelKey] : item
+          const val  = valueKey ? item[valueKey] : item
+          const lbl  = labelKey ? item[labelKey] : item
           const active = selected === val
           return (
             <TouchableOpacity
@@ -368,72 +271,21 @@ export default function AuthScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* Social OAuth buttons */}
-        <View style={styles.socialRow}>
-          <TouchableOpacity
-            style={[styles.socialBtn, styles.socialBtnGoogle]}
-            onPress={() => handleOAuth('google')}
-            disabled={!!oauthLoading}
-            activeOpacity={0.82}
-          >
-            {oauthLoading === 'google'
-              ? <ActivityIndicator color="#fff" size="small" />
-              : <>
-                  <FontAwesome5 name="google" size={16} color="#fff" />
-                  <Text style={styles.socialBtnText}>Google</Text>
-                </>
-            }
-          </TouchableOpacity>
-
-          {Platform.OS === 'ios' && (
-            <TouchableOpacity
-              style={[styles.socialBtn, styles.socialBtnApple]}
-              onPress={() => handleOAuth('apple')}
-              disabled={!!oauthLoading}
-              activeOpacity={0.82}
-            >
-              {oauthLoading === 'apple'
-                ? <ActivityIndicator color="#fff" size="small" />
-                : <>
-                    <FontAwesome5 name="apple" size={16} color="#fff" />
-                    <Text style={styles.socialBtnText}>Apple</Text>
-                  </>
-              }
-            </TouchableOpacity>
-          )}
-
-          <TouchableOpacity
-            style={[styles.socialBtn, styles.socialBtnFacebook]}
-            onPress={() => handleOAuth('facebook')}
-            disabled={!!oauthLoading}
-            activeOpacity={0.82}
-          >
-            {oauthLoading === 'facebook'
-              ? <ActivityIndicator color="#fff" size="small" />
-              : <>
-                  <FontAwesome5 name="facebook" size={16} color="#fff" />
-                  <Text style={styles.socialBtnText}>Facebook</Text>
-                </>
-            }
-          </TouchableOpacity>
-        </View>
-
-        {/* Divider */}
-        <View style={styles.dividerRow}>
-          <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>or continue with email</Text>
-          <View style={styles.dividerLine} />
-        </View>
-
         {/* Form card */}
         <View style={styles.card}>
 
+          {/* ── LOGIN ── */}
           {isLogin ? (
             <>
+              <View style={styles.hintBox}>
+                <FontAwesome5 name="info-circle" size={13} color={Colors.primary} style={{ marginRight: 8 }} />
+                <Text style={styles.hintText}>You can log in with your email <Text style={styles.hintBold}>or</Text> username</Text>
+              </View>
+
               <Field label="Email or Username">
                 <InputRow
                   icon="user"
-                  placeholder="email@example.com or @username"
+                  placeholder="email@example.com or your_username"
                   value={loginIdentifier}
                   onChangeText={setLoginIdentifier}
                 />
@@ -470,6 +322,8 @@ export default function AuthScreen() {
             </>
 
           ) : (
+
+            /* ── SIGN UP ── */
             <>
               <View style={styles.requiredNote}>
                 <FontAwesome5 name="info-circle" size={12} color={Colors.textMuted} style={{ marginRight: 6 }} />
@@ -693,29 +547,30 @@ const styles = StyleSheet.create({
     borderRadius: 14, borderWidth: 1, borderColor: Colors.border,
     marginBottom: 16, padding: 4,
   },
-  toggleTab: { flex: 1, paddingVertical: 10, borderRadius: 11, alignItems: 'center' },
-  toggleTabActive: { backgroundColor: Colors.primary },
-  toggleTabText: { color: Colors.textMuted, fontSize: 15, fontWeight: '600' },
+  toggleTab:           { flex: 1, paddingVertical: 10, borderRadius: 11, alignItems: 'center' },
+  toggleTabActive:     { backgroundColor: Colors.primary },
+  toggleTabText:       { color: Colors.textMuted, fontSize: 15, fontWeight: '600' },
   toggleTabTextActive: { color: '#fff' },
-
-  socialRow: { flexDirection: 'row', gap: 10, marginBottom: 18 },
-  socialBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
-    gap: 8, paddingVertical: 13, borderRadius: 14, minHeight: 48,
-  },
-  socialBtnGoogle:   { backgroundColor: '#DB4437' },
-  socialBtnApple:    { backgroundColor: '#000' },
-  socialBtnFacebook: { backgroundColor: '#1877F2' },
-  socialBtnText: { color: '#fff', fontWeight: '700', fontSize: 13 },
-
-  dividerRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginBottom: 16 },
-  dividerLine: { flex: 1, height: 1, backgroundColor: Colors.border },
-  dividerText: { color: Colors.textMuted, fontSize: 12 },
 
   card: {
     backgroundColor: Colors.card, borderRadius: 24,
     padding: 20, borderWidth: 1, borderColor: Colors.border,
   },
+
+  hintBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: `${Colors.primary}12`,
+    borderRadius: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: `${Colors.primary}30`,
+  },
+  hintText: { color: Colors.textMuted, fontSize: 13, flex: 1 },
+  hintBold: { color: Colors.primary, fontWeight: '700' },
+
   requiredNote: {
     flexDirection: 'row', alignItems: 'center',
     backgroundColor: Colors.card2, borderRadius: 8,
@@ -756,15 +611,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14, paddingVertical: 14,
   },
   dobSummaryText: { flex: 1, color: Colors.text, fontSize: 15 },
-  dobPickerRow: { flexDirection: 'row', gap: 8, marginTop: 8 },
-  dobPickerCol: { flex: 1 },
+  dobPickerRow:   { flexDirection: 'row', gap: 8, marginTop: 8 },
+  dobPickerCol:   { flex: 1 },
   dobSegmentBtn: {
     backgroundColor: Colors.card2, borderRadius: 10,
     borderWidth: 1, borderColor: Colors.border,
     paddingVertical: 10, alignItems: 'center',
   },
-  dobSegmentBtnActive: { borderColor: Colors.primary, backgroundColor: Colors.card },
-  dobSegmentLabel: { color: Colors.textMuted, fontSize: 13, fontWeight: '600' },
+  dobSegmentBtnActive:   { borderColor: Colors.primary, backgroundColor: Colors.card },
+  dobSegmentLabel:       { color: Colors.textMuted, fontSize: 13, fontWeight: '600' },
   dobSegmentLabelActive: { color: Colors.primary },
   dropdownScroll: {
     maxHeight: 160, marginTop: 4,
@@ -775,8 +630,8 @@ const styles = StyleSheet.create({
     paddingVertical: 10, paddingHorizontal: 12,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
-  dropdownOptionActive: { backgroundColor: Colors.primary },
-  dropdownOptionText: { color: Colors.textMuted, fontSize: 13 },
+  dropdownOptionActive:     { backgroundColor: Colors.primary },
+  dropdownOptionText:       { color: Colors.textMuted, fontSize: 13 },
   dropdownOptionTextActive: { color: '#fff', fontWeight: '600' },
 
   sexDropdown: {
@@ -788,8 +643,8 @@ const styles = StyleSheet.create({
     paddingVertical: 12, paddingHorizontal: 16,
     borderBottomWidth: 1, borderBottomColor: Colors.border,
   },
-  sexOptionActive: { backgroundColor: Colors.primary },
-  sexOptionText: { color: Colors.textMuted, fontSize: 14 },
+  sexOptionActive:     { backgroundColor: Colors.primary },
+  sexOptionText:       { color: Colors.textMuted, fontSize: 14 },
   sexOptionTextActive: { color: '#fff', fontWeight: '600' },
 
   button: {
@@ -797,6 +652,6 @@ const styles = StyleSheet.create({
     paddingVertical: 16, alignItems: 'center', marginTop: 6,
   },
   buttonDisabled: { opacity: 0.45 },
-  btnInner: { flexDirection: 'row', alignItems: 'center' },
-  buttonText: { color: '#fff', fontSize: 17, fontWeight: '700', letterSpacing: 0.3 },
+  btnInner:       { flexDirection: 'row', alignItems: 'center' },
+  buttonText:     { color: '#fff', fontSize: 17, fontWeight: '700', letterSpacing: 0.3 },
 })
